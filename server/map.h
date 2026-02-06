@@ -263,6 +263,12 @@ char loadTutorialStep( TutorialLoadProgress *inTutorialLoad,
                        double inTimeLimitSec );
 
 
+// loads a structure map file from structures/ at the given offset
+// returns true on success
+char loadStructureFromFile( const char *inMapFileName,
+                            int inOffsetX, int inOffsetY );
+
+
 
 
 #define MAP_METADATA_LENGTH 128

@@ -9345,6 +9345,46 @@ char loadTutorialStep( TutorialLoadProgress *inTutorialLoad,
         }
     return moreLeft;
     }
+
+
+char loadStructureFromFile( const char *inMapFileName,
+                            int inOffsetX, int inOffsetY ) {
+
+    if( inMapFileName == NULL ) {
+        return false;
+        }
+
+    File structureFolder( NULL, "structures" );
+
+    if( !structureFolder.exists() || !structureFolder.isDirectory() ) {
+        return false;
+        }
+
+    File *mapFile = structureFolder.getChildFile( inMapFileName );
+
+    if( mapFile == NULL || !mapFile->exists() || mapFile->isDirectory() ) {
+        delete mapFile;
+        return false;
+        }
+
+    char *fileName = mapFile->getFullFileName();
+
+    FILE *file = fopen( fileName, "r" );
+
+    delete [] fileName;
+    delete mapFile;
+
+    if( file == NULL ) {
+        return false;
+        }
+
+    // load whole file in one pass
+    loadIntoMapFromFile( file, inOffsetX, inOffsetY, 0 );
+
+    fclose( file );
+
+    return true;
+    }
  
  
  
