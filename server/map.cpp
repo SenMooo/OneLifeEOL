@@ -9354,13 +9354,28 @@ char loadStructureFromFile( const char *inMapFileName,
         return false;
         }
 
-    File structureFolder( NULL, "structures" );
+    char *safeName = stringDuplicate( inMapFileName );
+    for( int i=0; safeName[i] != '\0'; i++ ) {
+        if( safeName[i] == '\\' ) {
+            safeName[i] = '/';
+            }
+        }
 
-    if( !structureFolder.exists() || !structureFolder.isDirectory() ) {
+    if( safeName[0] == '/' || strstr( safeName, ".." ) != NULL ||
+        strstr( safeName, ":" ) != NULL ) {
+        delete [] safeName;
         return false;
         }
 
-    File *mapFile = structureFolder.getChildFile( inMapFileName );
+    File structureFolder( NULL, "structures" );
+
+    if( !structureFolder.exists() || !structureFolder.isDirectory() ) {
+        delete [] safeName;
+        return false;
+        }
+
+    File *mapFile = structureFolder.getChildFile( safeName );
+    delete [] safeName;
 
     if( mapFile == NULL || !mapFile->exists() || mapFile->isDirectory() ) {
         delete mapFile;
