@@ -1348,6 +1348,13 @@ static void mapCacheInsert( int inX, int inY, int inID,
    
  
 static int getBaseMapCallCount = 0;
+
+
+// NPC structure placement
+class File;
+static void spawnNpcStructures();
+static char loadStructureSceneFromFile( File *inFile,
+                                        int inOffsetX, int inOffsetY );
  
  
 static int getBaseMap( int inX, int inY, char *outGridPlacement = NULL ) {
@@ -2250,7 +2257,7 @@ int cleanMap() {
     AppLog::info( "\nCleaning map of objects that have been removed..." );
    
     skipTrackingMapChanges = true;
-   
+
     DB_Iterator dbi;
    
    
@@ -4115,6 +4122,10 @@ char initMap() {
         specialPlacements->deallocateStringElements();
         delete specialPlacements;
         }
+
+
+    // NPC structure placement (from structures-npc)
+    spawnNpcStructures();
    
    
    
@@ -9347,10 +9358,11 @@ char loadTutorialStep( TutorialLoadProgress *inTutorialLoad,
     }
 
 
-char loadStructureFromFile( const char *inMapFileName,
-                            int inOffsetX, int inOffsetY ) {
+static char loadStructureFromFolder( const char *inFolderName,
+                                     const char *inMapFileName,
+                                     int inOffsetX, int inOffsetY ) {
 
-    if( inMapFileName == NULL ) {
+    if( inFolderName == NULL || inMapFileName == NULL ) {
         return false;
         }
 
@@ -9367,14 +9379,22 @@ char loadStructureFromFile( const char *inMapFileName,
         return false;
         }
 
-    File structureFolder( NULL, "structures" );
+    File *structureFolder = new File( NULL, inFolderName );
 
-    if( !structureFolder.exists() || !structureFolder.isDirectory() ) {
+    if( !structureFolder->exists() || !structureFolder->isDirectory() ) {
+        delete structureFolder;
+        char *altPath = autoSprintf( "../OneLifeData7/%s", inFolderName );
+        structureFolder = new File( NULL, altPath );
+        delete [] altPath;
+        }
+
+    if( !structureFolder->exists() || !structureFolder->isDirectory() ) {
+        delete structureFolder;
         delete [] safeName;
         return false;
         }
 
-    File *mapFile = structureFolder.getChildFile( safeName );
+    File *mapFile = structureFolder->getChildFile( safeName );
     delete [] safeName;
 
     if( mapFile == NULL || !mapFile->exists() || mapFile->isDirectory() ) {
@@ -9387,18 +9407,587 @@ char loadStructureFromFile( const char *inMapFileName,
     FILE *file = fopen( fileName, "r" );
 
     delete [] fileName;
-    delete mapFile;
 
     if( file == NULL ) {
+        delete mapFile;
+        delete structureFolder;
         return false;
         }
 
-    // load whole file in one pass
-    loadIntoMapFromFile( file, inOffsetX, inOffsetY, 0 );
+    // sniff first non-empty line
+    char firstLine[256];
+    firstLine[0] = '\0';
+    while( fgets( firstLine, sizeof( firstLine ), file ) != NULL ) {
+        if( firstLine[0] != '\0' && firstLine[0] != '\n' &&
+            firstLine[0] != '\r' ) {
+            break;
+            }
+        }
 
-    fclose( file );
+    rewind( file );
+
+    char sceneFormat = false;
+    if( strstr( firstLine, "w=" ) == firstLine ) {
+        sceneFormat = true;
+        }
+
+    char loaded = false;
+    if( sceneFormat ) {
+        fclose( file );
+        loaded = loadStructureSceneFromFile( mapFile, inOffsetX, inOffsetY );
+        }
+    else {
+        // load whole file in one pass
+        loadIntoMapFromFile( file, inOffsetX, inOffsetY, 0 );
+        fclose( file );
+        loaded = true;
+        }
+
+    delete mapFile;
+    delete structureFolder;
+
+    return loaded;
+    }
+
+
+char loadStructureFromFile( const char *inMapFileName,
+                            int inOffsetX, int inOffsetY ) {
+    return loadStructureFromFolder( "structures",
+                                    inMapFileName,
+                                    inOffsetX, inOffsetY );
+    }
+
+
+static void freeStringVector( SimpleVector<char*> *inVec ) {
+    for( int i=0; i<inVec->size(); i++ ) {
+        char *s = inVec->getElementDirect( i );
+        delete [] s;
+        }
+    inVec->deleteAll();
+    }
+
+
+static int scanSceneCell( char **inLines, int inNumLines, int inIndex,
+                          char inHasBiome, int *outBiome, int *outOID,
+                          SimpleVector<int> *outContained,
+                          SimpleVector< SimpleVector<int> > *outSubContained ) {
+    int i = inIndex;
+
+    if( inHasBiome && i < inNumLines ) {
+        int biome = -1;
+        if( sscanf( inLines[i], "biome=%d", &biome ) == 1 ) {
+            *outBiome = biome;
+            i++;
+            }
+        }
+
+    if( i >= inNumLines ) {
+        return i;
+        }
+
+    if( strcmp( inLines[i], "empty" ) == 0 ) {
+        *outOID = 0;
+        i++;
+        return i;
+        }
+
+    int oID = 0;
+    if( sscanf( inLines[i], "oID=%d", &oID ) == 1 ) {
+        *outOID = oID;
+        i++;
+        }
+
+    // heldID
+    int temp = 0;
+    if( i < inNumLines && sscanf( inLines[i], "heldID=%d", &temp ) == 1 ) {
+        i++;
+        }
+
+    int numCont = 0;
+    if( i < inNumLines && sscanf( inLines[i], "numCont=%d", &numCont ) == 1 ) {
+        i++;
+        }
+
+    for( int c=0; c<numCont && i < inNumLines; c++ ) {
+        int contID = 0;
+        if( sscanf( inLines[i], "cont=%d", &contID ) == 1 ) {
+            i++;
+            }
+        int numSub = 0;
+        if( i < inNumLines && sscanf( inLines[i], "numSubCont=%d", &numSub ) == 1 ) {
+            i++;
+            }
+        SimpleVector<int> subVec;
+        for( int s=0; s<numSub && i < inNumLines; s++ ) {
+            int subID = 0;
+            if( sscanf( inLines[i], "subCont=%d", &subID ) == 1 ) {
+                subVec.push_back( subID );
+                }
+            i++;
+            }
+        outContained->push_back( contID );
+        outSubContained->push_back( subVec );
+        }
+
+    // skip to end of cell block
+    while( i < inNumLines ) {
+        if( strstr( inLines[i], "moveDelayTime=" ) != NULL ) {
+            i++;
+            break;
+            }
+        // if the file is truncated, avoid infinite scan
+        if( strstr( inLines[i], "x=" ) == inLines[i] ) {
+            break;
+            }
+        i++;
+        }
+
+    return i;
+    }
+
+
+static char loadStructureSceneFromFile( File *inFile,
+                                        int inOffsetX, int inOffsetY ) {
+    if( inFile == NULL ) {
+        return false;
+        }
+
+    char *fileText = inFile->readFileContents();
+    if( fileText == NULL ) {
+        return false;
+        }
+
+    int numLines = 0;
+    char **lines = split( fileText, "\n", &numLines );
+    delete [] fileText;
+
+    if( numLines < 4 ) {
+        for( int i=0; i<numLines; i++ ) {
+            delete [] lines[i];
+            }
+        delete [] lines;
+        return false;
+        }
+
+    int next = 0;
+    int w = 0;
+    int h = 0;
+    int originX = 0;
+    int originY = 0;
+
+    sscanf( lines[next], "w=%d", &w );
+    next++;
+    sscanf( lines[next], "h=%d", &h );
+    next++;
+
+    if( next < numLines && strstr( lines[next], "origin=" ) != NULL ) {
+        sscanf( lines[next], "origin=%d,%d", &originX, &originY );
+        next++;
+        }
+
+    char floorPresent = false;
+    if( next < numLines && strstr( lines[next], "floorPresent" ) != NULL ) {
+        floorPresent = true;
+        next++;
+        }
+
+    skipTrackingMapChanges = true;
+
+    // compute bounds of actual content (base objects or floors)
+    int minX = 1000000000;
+    int maxX = -1000000000;
+    int minY = 1000000000;
+    int maxY = -1000000000;
+
+    int boundsNext = next;
+    int bx = 0;
+    int by = 0;
+    int bRead = 0;
+    if( boundsNext < numLines ) {
+        bRead = sscanf( lines[boundsNext], "x=%d,y=%d", &bx, &by );
+        boundsNext++;
+        }
+
+    while( bRead == 2 && boundsNext <= numLines ) {
+        int baseBiome = -1;
+        int baseID = 0;
+        int floorID = 0;
+
+        SimpleVector<int> contained;
+        SimpleVector< SimpleVector<int> > subContained;
+
+        boundsNext = scanSceneCell( lines, numLines, boundsNext,
+                                    true, &baseBiome, &baseID,
+                                    &contained, &subContained );
+
+        int dummyBiome = -1;
+        int dummyID = 0;
+        SimpleVector<int> dummyContained;
+        SimpleVector< SimpleVector<int> > dummySubContained;
+        boundsNext = scanSceneCell( lines, numLines, boundsNext,
+                                    false, &dummyBiome, &dummyID,
+                                    &dummyContained, &dummySubContained );
+
+        if( floorPresent ) {
+            SimpleVector<int> floorContained;
+            SimpleVector< SimpleVector<int> > floorSubContained;
+            int floorBiome = -1;
+            boundsNext = scanSceneCell( lines, numLines, boundsNext,
+                                        false, &floorBiome, &floorID,
+                                        &floorContained, &floorSubContained );
+            }
+
+        if( baseID > 0 || floorID > 0 ) {
+            if( bx < minX ) minX = bx;
+            if( bx > maxX ) maxX = bx;
+            if( by < minY ) minY = by;
+            if( by > maxY ) maxY = by;
+            }
+
+        if( boundsNext < numLines ) {
+            bRead = sscanf( lines[boundsNext], "x=%d,y=%d", &bx, &by );
+            boundsNext++;
+            }
+        else {
+            bRead = 0;
+            }
+        }
+
+    if( minX <= maxX && minY <= maxY ) {
+        for( int cy=minY; cy<=maxY; cy++ ) {
+            for( int cx=minX; cx<=maxX; cx++ ) {
+                int worldX = inOffsetX + ( cx - originX );
+                int worldY = inOffsetY + ( originY - cy );
+                clearAllContained( worldX, worldY );
+                setMapObject( worldX, worldY, 0 );
+                }
+            }
+        }
+
+    int x = 0;
+    int y = 0;
+    int numRead = 0;
+    if( next < numLines ) {
+        numRead = sscanf( lines[next], "x=%d,y=%d", &x, &y );
+        next++;
+        }
+
+    while( numRead == 2 && next <= numLines ) {
+        int baseBiome = -1;
+        int baseID = 0;
+        int floorID = 0;
+
+        SimpleVector<int> contained;
+        SimpleVector< SimpleVector<int> > subContained;
+
+        next = scanSceneCell( lines, numLines, next,
+                      true, &baseBiome, &baseID,
+                      &contained, &subContained );
+
+        // skip person cell without overwriting base object
+        int dummyBiome = -1;
+        int dummyID = 0;
+        SimpleVector<int> dummyContained;
+        SimpleVector< SimpleVector<int> > dummySubContained;
+        next = scanSceneCell( lines, numLines, next,
+                      false, &dummyBiome, &dummyID,
+                      &dummyContained, &dummySubContained );
+
+        if( floorPresent ) {
+            SimpleVector<int> floorContained;
+            SimpleVector< SimpleVector<int> > floorSubContained;
+            int floorBiome = -1;
+            next = scanSceneCell( lines, numLines, next,
+                                  false, &floorBiome, &floorID,
+                                  &floorContained, &floorSubContained );
+            }
+
+        int worldX = inOffsetX + ( x - originX );
+        int worldY = inOffsetY + ( originY - y );
+
+        if( baseBiome != -1 ) {
+            biomeDBPut( worldX, worldY, baseBiome, baseBiome, 0.5 );
+            }
+
+        if( floorID > 0 ) {
+            setMapFloor( worldX, worldY, floorID );
+            }
+
+        if( baseID > 0 ) {
+            setMapObject( worldX, worldY, baseID );
+
+            int *contArray = contained.getElementArray();
+            setContained( worldX, worldY, contained.size(), contArray );
+            delete [] contArray;
+
+            for( int c=0; c<contained.size(); c++ ) {
+                int *subArray = subContained.getElement( c )->getElementArray();
+                setContained( worldX, worldY,
+                              subContained.getElement(c)->size(),
+                              subArray, c + 1 );
+                delete [] subArray;
+                }
+            }
+
+        if( next < numLines ) {
+            numRead = sscanf( lines[next], "x=%d,y=%d", &x, &y );
+            next++;
+            }
+        else {
+            numRead = 0;
+            }
+        }
+
+    skipTrackingMapChanges = false;
+
+    for( int i=0; i<numLines; i++ ) {
+        delete [] lines[i];
+        }
+    delete [] lines;
 
     return true;
+    }
+
+
+static void collectStructureFilesRecursive( File *inDir,
+                                            const char *inPrefix,
+                                            SimpleVector<char*> *outList ) {
+    if( inDir == NULL || !inDir->exists() || !inDir->isDirectory() ) {
+        return;
+        }
+
+    int numChildFiles = 0;
+    File **childFiles = inDir->getChildFiles( &numChildFiles );
+
+    for( int i=0; i<numChildFiles; i++ ) {
+        File *child = childFiles[i];
+        char *name = child->getFileName();
+
+        if( child->isDirectory() ) {
+            char *newPrefix = NULL;
+            if( inPrefix != NULL && strlen( inPrefix ) > 0 ) {
+                newPrefix = autoSprintf( "%s/%s", inPrefix, name );
+                }
+            else {
+                newPrefix = stringDuplicate( name );
+                }
+
+            collectStructureFilesRecursive( child, newPrefix, outList );
+
+            delete [] newPrefix;
+            }
+        else {
+            int nameLen = strlen( name );
+            if( nameLen >= 4 &&
+                strcmp( &( name[ nameLen - 4 ] ), ".txt" ) == 0 ) {
+
+                char *relPath = NULL;
+                if( inPrefix != NULL && strlen( inPrefix ) > 0 ) {
+                    relPath = autoSprintf( "%s/%s", inPrefix, name );
+                    }
+                else {
+                    relPath = stringDuplicate( name );
+                    }
+
+                outList->push_back( relPath );
+                }
+            }
+
+        delete [] name;
+        delete child;
+        }
+
+    delete [] childFiles;
+    }
+
+
+static void loadNpcStructurePlacements( SimpleVector<char*> *outNames,
+                                        SimpleVector<GridPos> *outPositions ) {
+    FILE *f = fopen( "structures/npc/placements.txt", "r" );
+    if( f == NULL ) {
+        return;
+        }
+
+    char path[1024];
+    int x, y;
+
+    while( fscanf( f, "%1023s %d %d", path, &x, &y ) == 3 ) {
+        outNames->push_back( stringDuplicate( path ) );
+        GridPos p = { x, y };
+        outPositions->push_back( p );
+        }
+
+    fclose( f );
+    }
+
+
+static void saveNpcStructurePlacements( SimpleVector<char*> *names,
+                                        SimpleVector<GridPos> *positions ) {
+    FILE *f = fopen( "structures/npc/placements.txt", "w" );
+    if( f == NULL ) {
+        return;
+        }
+
+    for( int i=0; i<names->size() && i<positions->size(); i++ ) {
+        GridPos p = positions->getElementDirect( i );
+        fprintf( f, "%s %d %d\n", names->getElementDirect( i ), p.x, p.y );
+        }
+
+    fclose( f );
+    }
+
+
+static int findNpcStructurePlacementIndex( SimpleVector<char*> *names,
+                                           const char *inPath ) {
+    for( int i=0; i<names->size(); i++ ) {
+        if( strcmp( names->getElementDirect( i ), inPath ) == 0 ) {
+            return i;
+            }
+        }
+    return -1;
+    }
+
+
+static char npcStructureTooClose( int inX, int inY,
+                                  SimpleVector<char*> *names,
+                                  SimpleVector<GridPos> *positions,
+                                  const char *inPath,
+                                  int inMinDist,
+                                  int inSameTypeMinDist ) {
+    int minDistSq = inMinDist * inMinDist;
+    int sameTypeMinDistSq = inSameTypeMinDist * inSameTypeMinDist;
+
+    for( int i=0; i<positions->size(); i++ ) {
+        GridPos p = positions->getElementDirect( i );
+        int dx = inX - p.x;
+        int dy = inY - p.y;
+        int distSq = dx * dx + dy * dy;
+
+        if( distSq < minDistSq ) {
+            return true;
+            }
+
+        if( inPath != NULL &&
+            strcmp( names->getElementDirect( i ), inPath ) == 0 &&
+            distSq < sameTypeMinDistSq ) {
+            return true;
+            }
+        }
+
+    return false;
+    }
+
+
+static void spawnNpcStructures() {
+    File *npcFolder = new File( NULL, "structures/npc" );
+    if( !npcFolder->exists() || !npcFolder->isDirectory() ) {
+        delete npcFolder;
+        npcFolder = new File( NULL, "../OneLifeData7/structures/npc" );
+        }
+
+    if( !npcFolder->exists() || !npcFolder->isDirectory() ) {
+        delete npcFolder;
+        return;
+        }
+
+    SimpleVector<char*> npcFiles;
+    collectStructureFilesRecursive( npcFolder, "", &npcFiles );
+    delete npcFolder;
+
+    if( npcFiles.size() == 0 ) {
+        return;
+        }
+
+    SimpleVector<char*> placedNames;
+    SimpleVector<GridPos> placedPositions;
+    loadNpcStructurePlacements( &placedNames, &placedPositions );
+
+    int minDist = 10;
+    int maxDist = 10;
+    int sameTypeMinDist = 10;
+
+    int safeR = barrierRadius - 2;
+    if( safeR < maxDist + 10 ) {
+        safeR = maxDist + 10;
+        }
+
+    CustomRandomSource placementRandSource(
+        (int)( biomeRandSeedA ^ biomeRandSeedB ^ 0x4E5043 ) );
+
+    char anyPlaced = false;
+
+    skipTrackingMapChanges = true;
+
+    // ensure existing placements are loaded
+    for( int i=0; i<placedNames.size() && i<placedPositions.size(); i++ ) {
+        GridPos p = placedPositions.getElementDirect( i );
+        char *path = placedNames.getElementDirect( i );
+        loadStructureFromFolder( "structures/npc", path, p.x, p.y );
+        }
+
+    for( int i=0; i<npcFiles.size(); i++ ) {
+        char *path = npcFiles.getElementDirect( i );
+
+        if( findNpcStructurePlacementIndex( &placedNames, path ) != -1 ) {
+            continue;
+            }
+
+        char placed = false;
+
+        for( int attempt=0; attempt<200 && !placed; attempt++ ) {
+            int x = 0;
+            int y = 0;
+
+            if( placedPositions.size() > 0 ) {
+                int anchorI = placementRandSource.getRandomBoundedInt(
+                    0, placedPositions.size() - 1 );
+                GridPos anchor = placedPositions.getElementDirect( anchorI );
+
+                int dist = placementRandSource.getRandomBoundedInt(
+                    minDist, maxDist );
+                double angle = placementRandSource.getRandomBoundedDouble(
+                    0, 2 * M_PI );
+
+                x = anchor.x + lrint( cos( angle ) * dist );
+                y = anchor.y + lrint( sin( angle ) * dist );
+                }
+            else {
+                x = placementRandSource.getRandomBoundedInt( -safeR, safeR );
+                y = placementRandSource.getRandomBoundedInt( -safeR, safeR );
+                }
+
+            if( x > safeR || x < -safeR || y > safeR || y < -safeR ) {
+                continue;
+                }
+
+            if( getMapObjectRaw( x, y ) != 0 ) {
+                continue;
+                }
+
+            if( npcStructureTooClose( x, y,
+                                      &placedNames, &placedPositions,
+                                      path, minDist, sameTypeMinDist ) ) {
+                continue;
+                }
+
+            if( loadStructureFromFolder( "structures/npc", path, x, y ) ) {
+                GridPos p = { x, y };
+                placedPositions.push_back( p );
+                placedNames.push_back( stringDuplicate( path ) );
+                placed = true;
+                anyPlaced = true;
+                }
+            }
+        }
+
+    skipTrackingMapChanges = false;
+
+    if( anyPlaced ) {
+        saveNpcStructurePlacements( &placedNames, &placedPositions );
+        }
+
+    freeStringVector( &npcFiles );
+    freeStringVector( &placedNames );
     }
  
  
