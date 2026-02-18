@@ -211,10 +211,32 @@ static SimpleVector<char*> youForgivingPhrases;
 
 static SimpleVector<char*> youGivingPhrases;
 static SimpleVector<char*> namedGivingPhrases;
+static SimpleVector<char*> bedClaimPhrases;
+static SimpleVector<char*> bedUnclaimPhrases;
 
 
 // password-protected objects
 static SimpleVector<char*> passwordProtectingPhrases;
+
+typedef struct LiveObject LiveObject;
+
+GridPos getPlayerPos( LiveObject *inPlayer );
+void sendGlobalMessage( char *inMessage,
+                        LiveObject *inOnePlayerOnly );
+static void sendBedNotice( LiveObject *inPlayer, const char *inMessage );
+
+
+typedef struct BedSpawnRecord {
+        char *email;
+        GridPos pos;
+    } BedSpawnRecord;
+
+static SimpleVector<BedSpawnRecord> bedSpawnRecords;
+
+static const int bedSpawnObjectIDPrimary = 17619;
+static const int bedSpawnObjectIDSecondary = 17620;
+static const char *bedSpawnOwnersFileName = "bedSpawnOwners.txt";
+static char bedSpawnSystemReady = false;
 
 typedef struct passwordRecord {
         int x;
@@ -228,6 +250,265 @@ void restorePasswordRecord( int x, int y, unsigned char* passwordChars ) {
     std::string password( reinterpret_cast<char*>( passwordChars ) );
     passwordRecord r = { x, y, password };
     passwordRecords.push_back( r );
+    }
+
+
+static int findBedSpawnRecordIndexByEmail( const char *inEmail ) {
+    for( int i=0; i<bedSpawnRecords.size(); i++ ) {
+        BedSpawnRecord *r = bedSpawnRecords.getElement( i );
+
+        if( strcmp( r->email, inEmail ) == 0 ) {
+            return i;
+            }
+        }
+
+    return -1;
+    }
+
+
+static int findBedSpawnRecordIndexByPos( GridPos inPos ) {
+    for( int i=0; i<bedSpawnRecords.size(); i++ ) {
+        BedSpawnRecord *r = bedSpawnRecords.getElement( i );
+
+        if( r->pos.x == inPos.x && r->pos.y == inPos.y ) {
+            return i;
+            }
+        }
+
+    return -1;
+    }
+
+
+static void removeBedSpawnRecordIndex( int inIndex ) {
+    BedSpawnRecord *r = bedSpawnRecords.getElement( inIndex );
+    delete [] r->email;
+
+    bedSpawnRecords.deleteElement( inIndex );
+    }
+
+
+static void clearBedSpawnRecords() {
+    for( int i=0; i<bedSpawnRecords.size(); i++ ) {
+        BedSpawnRecord *r = bedSpawnRecords.getElement( i );
+        delete [] r->email;
+        }
+    bedSpawnRecords.deleteAll();
+    }
+
+
+static char isBedSpawnObject( int inObjectID ) {
+    if( inObjectID <= 0 ) {
+        return false;
+        }
+
+    if( inObjectID == bedSpawnObjectIDPrimary ||
+        inObjectID == bedSpawnObjectIDSecondary ) {
+        return true;
+        }
+
+    return false;
+    }
+
+
+
+
+static void saveBedSpawnRecords() {
+    FILE *f = fopen( bedSpawnOwnersFileName, "w" );
+
+    if( f == NULL ) {
+        AppLog::errorF( "Failed to open %s for writing", bedSpawnOwnersFileName );
+        return;
+        }
+
+    for( int i=0; i<bedSpawnRecords.size(); i++ ) {
+        BedSpawnRecord *r = bedSpawnRecords.getElement( i );
+        fprintf( f, "%s %d %d\n", r->email, r->pos.x, r->pos.y );
+        }
+
+    fclose( f );
+    }
+
+
+static void clearInvalidBedSpawnRecords() {
+    if( ! bedSpawnSystemReady ) {
+        return;
+        }
+
+    char changed = false;
+
+    for( int i=bedSpawnRecords.size() - 1; i>=0; i-- ) {
+        BedSpawnRecord *r = bedSpawnRecords.getElement( i );
+
+        if( ! isBedSpawnObject( getMapObject( r->pos.x, r->pos.y ) ) ) {
+            removeBedSpawnRecordIndex( i );
+            changed = true;
+            }
+        }
+
+    if( changed ) {
+        saveBedSpawnRecords();
+        }
+    }
+
+
+static void loadBedSpawnRecords() {
+    FILE *f = fopen( bedSpawnOwnersFileName, "r" );
+
+    if( f == NULL ) {
+        return;
+        }
+
+    clearBedSpawnRecords();
+
+    char lineBuffer[600];
+
+    while( fgets( lineBuffer, sizeof( lineBuffer ), f ) != NULL ) {
+        char email[512];
+        int x, y;
+
+        int numRead = sscanf( lineBuffer, "%511s %d %d", email, &x, &y );
+
+        if( numRead == 3 ) {
+            BedSpawnRecord r;
+            r.email = stringDuplicate( email );
+            r.pos = { x, y };
+
+            int existingByEmail = findBedSpawnRecordIndexByEmail( r.email );
+            if( existingByEmail != -1 ) {
+                removeBedSpawnRecordIndex( existingByEmail );
+                }
+
+            int existingByPos = findBedSpawnRecordIndexByPos( r.pos );
+            if( existingByPos != -1 ) {
+                removeBedSpawnRecordIndex( existingByPos );
+                }
+
+            bedSpawnRecords.push_back( r );
+            }
+        }
+
+    fclose( f );
+
+    clearInvalidBedSpawnRecords();
+    }
+
+
+static char getBedSpawnPosForEmail( const char *inEmail, GridPos *outPos ) {
+    if( ! bedSpawnSystemReady ) {
+        return false;
+        }
+
+    clearInvalidBedSpawnRecords();
+
+    int i = findBedSpawnRecordIndexByEmail( inEmail );
+
+    if( i == -1 ) {
+        return false;
+        }
+
+    BedSpawnRecord *r = bedSpawnRecords.getElement( i );
+
+    if( ! isBedSpawnObject( getMapObject( r->pos.x, r->pos.y ) ) ) {
+        removeBedSpawnRecordIndex( i );
+        saveBedSpawnRecords();
+        return false;
+        }
+
+    *outPos = r->pos;
+    return true;
+    }
+
+
+static void registerBedSpawnForPlayer( LiveObject *inPlayer,
+                                       const char *inPlayerEmail ) {
+    if( ! bedSpawnSystemReady ) {
+        sendBedNotice( inPlayer, "BED SPAWN SYSTEM NOT READY YET." );
+        return;
+        }
+
+    GridPos pos = getPlayerPos( inPlayer );
+
+    if( ! isBedSpawnObject( getMapObject( pos.x, pos.y ) ) ) {
+        sendBedNotice( inPlayer, "STAND ON A BED BEFORE CLAIMING IT." );
+        return;
+        }
+
+    clearInvalidBedSpawnRecords();
+
+    int posIndex = findBedSpawnRecordIndexByPos( pos );
+    if( posIndex != -1 ) {
+        BedSpawnRecord *existing = bedSpawnRecords.getElement( posIndex );
+
+        if( strcmp( existing->email, inPlayerEmail ) != 0 ) {
+            sendBedNotice( inPlayer, "THIS BED IS ALREADY OWNED." );
+            return;
+            }
+        }
+
+    int emailIndex = findBedSpawnRecordIndexByEmail( inPlayerEmail );
+
+    if( emailIndex != -1 ) {
+        BedSpawnRecord *existing = bedSpawnRecords.getElement( emailIndex );
+        if( existing->pos.x == pos.x && existing->pos.y == pos.y ) {
+            sendBedNotice( inPlayer, "THIS IS ALREADY YOUR BED." );
+            return;
+            }
+        }
+
+    if( emailIndex != -1 ) {
+        removeBedSpawnRecordIndex( emailIndex );
+        }
+
+    posIndex = findBedSpawnRecordIndexByPos( pos );
+    if( posIndex != -1 ) {
+        removeBedSpawnRecordIndex( posIndex );
+        }
+
+    BedSpawnRecord r;
+    r.email = stringDuplicate( inPlayerEmail );
+    r.pos = pos;
+
+    bedSpawnRecords.push_back( r );
+    saveBedSpawnRecords();
+
+    sendBedNotice( inPlayer, "BED CLAIMED. SPAWN CODE BED WILL USE THIS BED." );
+    }
+
+
+static void unregisterBedSpawnForPlayer( LiveObject *inPlayer,
+                                         const char *inPlayerEmail ) {
+    if( ! bedSpawnSystemReady ) {
+        sendBedNotice( inPlayer, "BED SPAWN SYSTEM NOT READY YET." );
+        return;
+        }
+
+    GridPos pos = getPlayerPos( inPlayer );
+
+    if( ! isBedSpawnObject( getMapObject( pos.x, pos.y ) ) ) {
+        sendBedNotice( inPlayer, "STAND ON A BED BEFORE FREEING IT." );
+        return;
+        }
+
+    clearInvalidBedSpawnRecords();
+
+    int posIndex = findBedSpawnRecordIndexByPos( pos );
+
+    if( posIndex == -1 ) {
+        sendBedNotice( inPlayer, "THIS BED IS ALREADY FREE." );
+        return;
+        }
+
+    BedSpawnRecord *existing = bedSpawnRecords.getElement( posIndex );
+
+    if( strcmp( existing->email, inPlayerEmail ) != 0 ) {
+        sendBedNotice( inPlayer, "YOU CANNOT FREE SOMEONE ELSE'S BED." );
+        return;
+        }
+
+    removeBedSpawnRecordIndex( posIndex );
+    saveBedSpawnRecords();
+
+    sendBedNotice( inPlayer, "BED FREED. SPAWN CODE BED WILL NO LONGER USE IT." );
     }
     
 //2HOL: <fstream>, <iostream> added to handle restoration of in-game passwords on server restart
@@ -548,6 +829,7 @@ typedef struct FreshConnection {
 
         char *email;
         uint32_t hashedSpawnSeed;
+        char useBedSpawn;
         char *famTarget = NULL;
         
         int tutorialNumber;
@@ -1956,11 +2238,15 @@ void quitCleanup() {
     
     youGivingPhrases.deallocateStringElements();
     namedGivingPhrases.deallocateStringElements();
+    bedClaimPhrases.deallocateStringElements();
+    bedUnclaimPhrases.deallocateStringElements();
     infertilityDeclaringPhrases.deallocateStringElements();
     fertilityDeclaringPhrases.deallocateStringElements();
     
     // password-protected objects
     passwordProtectingPhrases.deallocateStringElements();
+
+    clearBedSpawnRecords();
     
     if( curseYouPhrase != NULL ) {
         delete [] curseYouPhrase;
@@ -4510,6 +4796,19 @@ void sendGlobalMessage( char *inMessage,
             }
         }
     delete [] fullMessage;
+    }
+
+
+static void sendBedNotice( LiveObject *inPlayer, const char *inMessage ) {
+    if( inPlayer == NULL ) {
+        return;
+        }
+
+    inPlayer->globalMessageQueue.deallocateStringElements();
+    inPlayer->globalMessageQueue.deleteAll();
+    inPlayer->lastGlobalMessageTime = 0;
+
+    sendGlobalMessage( (char*)inMessage, inPlayer );
     }
 
 
@@ -7339,6 +7638,16 @@ int processLoggedInPlayer( char inAllowReconnect,
         }
     
 
+    GridPos bedSpawnPos = { 0, 0 };
+    char hasBedSpawnPos = false;
+    if( connection->useBedSpawn ) {
+        if( ! getBedSpawnPosForEmail( inEmail, &bedSpawnPos ) ) {
+            return -3;
+            }
+        hasBedSpawnPos = true;
+        }
+
+
 
     // new behavior:
     // allow this new connection from same
@@ -7839,6 +8148,10 @@ int processLoggedInPlayer( char inAllowReconnect,
         }
         
     if( connection->hashedSpawnSeed != 0 && SettingsManager::getIntSetting( "forceEveOnSeededSpawn", 0 ) ) {
+        parentChoices.deleteAll();
+        }
+
+    if( connection->useBedSpawn ) {
         parentChoices.deleteAll();
         }
 
@@ -8390,6 +8703,18 @@ int processLoggedInPlayer( char inAllowReconnect,
 
             AppLog::infoF( "Player %s seed evaluated to (%d,%d)",
                     newObject.email, startX, startY );
+            }
+
+        if( connection->useBedSpawn ) {
+            if( hasBedSpawnPos ) {
+                startX = bedSpawnPos.x;
+                startY = bedSpawnPos.y;
+
+                AppLog::infoF( "Player %s spawned at bed (%d,%d)",
+                               newObject.email,
+                               startX,
+                               startY );
+                }
             }
         
         
@@ -9140,6 +9465,7 @@ static void processWaitingTwinConnection( FreshConnection inConnection ) {
             else {
                 
                 nextConnection->hashedSpawnSeed = 0;
+                nextConnection->useBedSpawn = false;
                 
                 if( nextConnection->famTarget != NULL ) {
                     delete[] nextConnection->famTarget;
@@ -11043,6 +11369,16 @@ static char isWildcardGivingSay( char *inSaidString,
 
 char isYouGivingSay( char *inSaidString ) {
     return isWildcardGivingSay( inSaidString, &youGivingPhrases );
+    }
+
+
+char isBedClaimSay( char *inSaidString ) {
+    return isWildcardGivingSay( inSaidString, &bedClaimPhrases );
+    }
+
+
+char isBedUnclaimSay( char *inSaidString ) {
+    return isWildcardGivingSay( inSaidString, &bedUnclaimPhrases );
     }
 
 
@@ -13506,12 +13842,24 @@ int main() {
     
     readPhrases( "youGivingPhrases", &youGivingPhrases );
     readPhrases( "namedGivingPhrases", &namedGivingPhrases );
+    readPhrases( "bedClaimPhrases", &bedClaimPhrases );
+    readPhrases( "bedUnclaimPhrases", &bedUnclaimPhrases );
+
+    if( bedClaimPhrases.size() == 0 ) {
+        bedClaimPhrases.push_back( stringDuplicate( "THIS IS MY BED" ) );
+        }
+
+    if( bedUnclaimPhrases.size() == 0 ) {
+        bedUnclaimPhrases.push_back( stringDuplicate( "THIS BED IS FREE" ) );
+        }
     
     // password-protected objects
     readPhrases( "passwordProtectingPhrases", &passwordProtectingPhrases );
     
     readPhrases( "infertilityDeclaringPhrases", &infertilityDeclaringPhrases );
     readPhrases( "fertilityDeclaringPhrases", &fertilityDeclaringPhrases );
+
+    loadBedSpawnRecords();
 
     eveName = 
         SettingsManager::getStringSetting( "eveName", "EVE" );
@@ -13657,6 +14005,9 @@ int main() {
         // cannot continue after map init fails
         return 1;
         }
+
+    bedSpawnSystemReady = true;
+    clearInvalidBedSpawnRecords();
     
 
 
@@ -14252,6 +14603,8 @@ int main() {
                     Time::getCurrentTime();
 
                 newConnection.email = NULL;
+                newConnection.hashedSpawnSeed = 0;
+                newConnection.useBedSpawn = false;
 
                 newConnection.sock = sock;
 
@@ -14608,6 +14961,11 @@ int main() {
                             // we need to notify them about the famTarget failure
                             removeConnectionFromList = false;
                             }
+                        else if( newID == -3 ) {
+                            nextConnection->error = true;
+                            nextConnection->errorCauseString =
+                                "No claimed bed for BED spawn";
+                            }
                         }
                                                         
                     if( removeConnectionFromList ) {
@@ -14797,12 +15155,24 @@ int main() {
                         SimpleVector<char *> *tokens =
                             tokenizeString( message );
                         
-                        if( tokens->size() == 4 || tokens->size() == 5 ||
+                        if( tokens->size() == 3 ||
+                            tokens->size() == 4 || tokens->size() == 5 ||
                             tokens->size() == 7 ) {
-                            
-                            nextConnection->email = 
-                                stringDuplicate( 
-                                    tokens->getElementDirect( 1 ) );
+
+                            nextConnection->hashedSpawnSeed = 0;
+                            nextConnection->useBedSpawn = false;
+
+                            char hasEmailToken = tokens->size() != 3;
+
+                            if( hasEmailToken ) {
+                                nextConnection->email = 
+                                    stringDuplicate( 
+                                        tokens->getElementDirect( 1 ) );
+                                }
+                            else {
+                                nextConnection->email = stringDuplicate( "blank_email" );
+                                nextConnection->famTarget = NULL;
+                                }
 
 
                             // If email contains string delimiter
@@ -14811,76 +15181,116 @@ int main() {
                             const size_t minSeedLen = 1;
                             const char seedDelim = '|';
 
+                            if( hasEmailToken ) {
 
-                            std::string emailAndSeed { tokens->getElementDirect( 1 ) };
+                                std::string emailAndSeed { tokens->getElementDirect( 1 ) };
 
-                            const size_t seedDelimPos = emailAndSeed.find( seedDelim );
+                                const size_t seedDelimPos = emailAndSeed.find( seedDelim );
 
-                            if( seedDelimPos != std::string::npos ) {
-                                const size_t seedLen = emailAndSeed.length() - seedDelimPos;
+                                if( seedDelimPos != std::string::npos ) {
+                                    const size_t seedLen = emailAndSeed.length() - seedDelimPos - 1;
 
-                                if( seedLen > minSeedLen ) {
-                                    // Get the substr from one after the seed delim
-                                    std::string seed { emailAndSeed.substr( seedDelimPos + 1 ) };
-                                    char *sSeed = SettingsManager::getStringSetting("seedPepper", "default pepper");
-                                    std::string seedPepper { sSeed };
-                                    
-                                    nextConnection->hashedSpawnSeed =
-                                        fnv1aHash(seed, fnv1aHash(seedPepper));
-                                    
-                                    delete [] sSeed;
-                                }
+                                    if( seedLen > minSeedLen ) {
+                                        // Get the substr from one after the seed delim
+                                        std::string seed { emailAndSeed.substr( seedDelimPos + 1 ) };
 
-                                // Remove seed from email
-                                if( seedDelimPos == 0) {
-                                    // There was only a seed not email
-                                    nextConnection->email = stringDuplicate( "blank_email" );
-                                } else {
-                                    std::string onlyEmail { emailAndSeed.substr( 0, seedDelimPos ) };
+                                        char *seedLower = stringToLowerCase( seed.c_str() );
 
-                                    delete[] nextConnection->email;
-                                    nextConnection->email = stringDuplicate( onlyEmail.c_str() );
-                                }
-                            } else {
-                                nextConnection->hashedSpawnSeed = 0;
-                                
-                                // Check for famTarget as well only if seed isn't present in email
-                                const char famTargetDelim = ':';
+                                        if( strcmp( seedLower, "bed" ) == 0 ) {
+                                            nextConnection->useBedSpawn = true;
+                                            nextConnection->hashedSpawnSeed = 0;
+                                            }
+                                        else {
+                                            nextConnection->useBedSpawn = false;
 
+                                            char *sSeed = SettingsManager::getStringSetting("seedPepper", "default pepper");
+                                            std::string seedPepper { sSeed };
 
-                                std::string emailAndFamTarget { nextConnection->email };
+                                            nextConnection->hashedSpawnSeed =
+                                                fnv1aHash(seed, fnv1aHash(seedPepper));
 
-                                const size_t famTargetDelimPos = emailAndFamTarget.find( famTargetDelim );
+                                            delete [] sSeed;
+                                            }
 
-                                if( famTargetDelimPos != std::string::npos ) {
+                                        delete [] seedLower;
+                                    }
+                                    else {
+                                        nextConnection->useBedSpawn = false;
+                                        nextConnection->hashedSpawnSeed = 0;
+                                    }
 
-                                    // Get the substr from one after the famTarget delim
-                                    std::string famTarget { emailAndFamTarget.substr( famTargetDelimPos + 1 ) };
-
-                                    nextConnection->famTarget =
-                                        stringToUpperCase( famTarget.c_str() );
-
-                                    // Remove famTarget from email
-                                    if( famTargetDelimPos == 0 ) {
-                                        // There was only a famTarget not email
+                                    // Remove seed from email
+                                    if( seedDelimPos == 0) {
+                                        // There was only a seed not email
                                         nextConnection->email = stringDuplicate( "blank_email" );
                                     } else {
-                                        std::string onlyEmail { emailAndFamTarget.substr( 0, famTargetDelimPos ) };
+                                        std::string onlyEmail { emailAndSeed.substr( 0, seedDelimPos ) };
 
                                         delete[] nextConnection->email;
                                         nextConnection->email = stringDuplicate( onlyEmail.c_str() );
                                     }
                                 } else {
-                                    nextConnection->famTarget = NULL;
+                                    nextConnection->hashedSpawnSeed = 0;
+                                    nextConnection->useBedSpawn = false;
+
+                                    // Check for famTarget as well only if seed isn't present in email
+                                    const char famTargetDelim = ':';
+
+
+                                    std::string emailAndFamTarget { nextConnection->email };
+
+                                    const size_t famTargetDelimPos = emailAndFamTarget.find( famTargetDelim );
+
+                                    if( famTargetDelimPos != std::string::npos ) {
+
+                                        // Get the substr from one after the famTarget delim
+                                        std::string famTarget { emailAndFamTarget.substr( famTargetDelimPos + 1 ) };
+
+                                        nextConnection->famTarget =
+                                            stringToUpperCase( famTarget.c_str() );
+
+                                        // Remove famTarget from email
+                                        if( famTargetDelimPos == 0 ) {
+                                            // There was only a famTarget not email
+                                            nextConnection->email = stringDuplicate( "blank_email" );
+                                        } else {
+                                            std::string onlyEmail { emailAndFamTarget.substr( 0, famTargetDelimPos ) };
+
+                                            delete[] nextConnection->email;
+                                            nextConnection->email = stringDuplicate( onlyEmail.c_str() );
+                                        }
+                                    } else {
+                                        nextConnection->famTarget = NULL;
+                                    }
                                 }
-                            }
+                                }
 
                             nextConnection->email = 
                                 stringToLowerCase( 
                                     nextConnection->email );
 
-                            char *pwHash = tokens->getElementDirect( 2 );
-                            char *keyHash = tokens->getElementDirect( 3 );
+                            if( nextConnection->useBedSpawn ) {
+                                GridPos bedPos;
+                                if( ! getBedSpawnPosForEmail( nextConnection->email,
+                                                              &bedPos ) ) {
+                                    const char *rejectMessage = "REJECTED\n#";
+                                    nextConnection->sock->send(
+                                        (unsigned char*)rejectMessage,
+                                        strlen( rejectMessage ),
+                                        false, false );
+
+                                    nextConnection->error = true;
+                                    nextConnection->errorCauseString =
+                                        "No claimed bed for BED spawn";
+                                    nextConnection->rejectedSendTime = currentTime;
+                                    }
+                                }
+
+                            int pwHashIndex = hasEmailToken ? 2 : 1;
+                            int keyHashIndex = hasEmailToken ? 3 : 2;
+
+                            char *pwHash = tokens->getElementDirect( pwHashIndex );
+                            char *keyHash = tokens->getElementDirect( keyHashIndex );
                             
                             if( tokens->size() >= 5 ) {
                                 sscanf( tokens->getElementDirect( 4 ),
@@ -15063,6 +15473,11 @@ int main() {
                                             // Do not remove this connection
                                             // we need to notify them about the famTarget failure
                                             removeConnectionFromList = false;
+                                            }
+                                        else if( newID == -3 ) {
+                                            nextConnection->error = true;
+                                            nextConnection->errorCauseString =
+                                                "No claimed bed for BED spawn";
                                             }
                                         }
                                                                         
@@ -17334,6 +17749,15 @@ int main() {
                         
                         delete [] m.saidText;
                         m.saidText = cleanedString;
+
+                        if( isBedUnclaimSay( m.saidText ) ) {
+                            unregisterBedSpawnForPlayer( nextPlayer,
+                                                         nextPlayer->email );
+                            }
+                        else if( isBedClaimSay( m.saidText ) ) {
+                            registerBedSpawnForPlayer( nextPlayer,
+                                                       nextPlayer->email );
+                            }
                         
                         
                         if( nextPlayer->ownedPositions.size() > 0 ) {
