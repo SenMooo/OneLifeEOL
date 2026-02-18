@@ -440,7 +440,7 @@ static void registerBedSpawnForPlayer( LiveObject *inPlayer,
         BedSpawnRecord *existing = bedSpawnRecords.getElement( posIndex );
 
         if( strcmp( existing->email, inPlayerEmail ) != 0 ) {
-            sendBedNotice( inPlayer, "THIS BED IS ALREADY OWNED." );
+            sendBedNotice( inPlayer, "I KNOW IT LOOKS COZY, BUT THIS BED IS TAKEN" );
             return;
             }
         }
@@ -9433,6 +9433,29 @@ static void processWaitingTwinConnection( FreshConnection inConnection ) {
                     // we need to notify them about the famTarget failure
                     return;
                     }
+                else if( newID == -3 ) {
+
+                    for( int j=0; j<twinConnections.size(); j++ ) {
+                        FreshConnection *nextConnectionToReject =
+                            twinConnections.getElementDirect( j );
+
+                        nextConnectionToReject->error = true;
+                        nextConnectionToReject->errorCauseString =
+                            "Login rejected";
+
+                        if( nextConnectionToReject->twinCode != NULL ) {
+                            delete [] nextConnectionToReject->twinCode;
+                            nextConnectionToReject->twinCode = NULL;
+                            }
+                        if( nextConnectionToReject->ipAddress != NULL ) {
+                            delete [] nextConnectionToReject->ipAddress;
+                            nextConnectionToReject->ipAddress = NULL;
+                            }
+                        }
+
+                    nextLogInTwin = false;
+                    return;
+                    }
                     
                 firstTwinID = newID;
                     
@@ -14964,7 +14987,7 @@ int main() {
                         else if( newID == -3 ) {
                             nextConnection->error = true;
                             nextConnection->errorCauseString =
-                                "No claimed bed for BED spawn";
+                                "Login rejected";
                             }
                         }
                                                         
@@ -15281,7 +15304,7 @@ int main() {
 
                                     nextConnection->error = true;
                                     nextConnection->errorCauseString =
-                                        "No claimed bed for BED spawn";
+                                        "Login rejected";
                                     nextConnection->rejectedSendTime = currentTime;
                                     }
                                 }
@@ -15299,6 +15322,19 @@ int main() {
                                 }
                             
                             if( tokens->size() == 7 ) {
+                                if( nextConnection->useBedSpawn ) {
+                                    const char *rejectMessage = "REJECTED\n#";
+                                    nextConnection->sock->send(
+                                        (unsigned char*)rejectMessage,
+                                        strlen( rejectMessage ),
+                                        false, false );
+
+                                    nextConnection->error = true;
+                                    nextConnection->errorCauseString =
+                                        "Login rejected";
+                                    nextConnection->rejectedSendTime = currentTime;
+                                    }
+
                                 nextConnection->twinCode =
                                     stringDuplicate( 
                                         tokens->getElementDirect( 5 ) );
@@ -15477,7 +15513,7 @@ int main() {
                                         else if( newID == -3 ) {
                                             nextConnection->error = true;
                                             nextConnection->errorCauseString =
-                                                "No claimed bed for BED spawn";
+                                                "Login rejected";
                                             }
                                         }
                                                                         
