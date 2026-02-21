@@ -9801,9 +9801,65 @@ static void collectStructureFilesRecursive( File *inDir,
     }
 
 
-static void loadNpcStructurePlacements( SimpleVector<char*> *outNames,
+static void loadNpcSpawnGlobalSettings( const char *inRulesFilePath,
+                                        int *outMaxSpawnHalfSize,
+                                        int *outVillageCenterSpacing,
+                                        int *outVillageSpawnHalfSize,
+                                        int *outVillageRingGateEnabled,
+                                        int *outVillageRingInnerHalfSize,
+                                        int *outVillageRingOuterHalfSize ) {
+    FILE *f = fopen( inRulesFilePath, "r" );
+    if( f == NULL ) {
+        return;
+        }
+
+    char line[512];
+
+    while( fgets( line, sizeof( line ), f ) != NULL ) {
+        if( line[0] == '#' || line[0] == '\n' || line[0] == '\r' ) {
+            continue;
+            }
+
+        char scope[64];
+        char key[64];
+        int value = 0;
+
+        if( sscanf( line, "%63s %63s %d", scope, key, &value ) != 3 ) {
+            continue;
+            }
+
+        if( strcmp( scope, "GLOBAL" ) != 0 ) {
+            continue;
+            }
+
+        if( strcmp( key, "maxSpawnHalfSize" ) == 0 && value > 0 ) {
+            *outMaxSpawnHalfSize = value;
+            }
+        else if( strcmp( key, "villageCenterSpacing" ) == 0 && value > 0 ) {
+            *outVillageCenterSpacing = value;
+            }
+        else if( strcmp( key, "villageSpawnHalfSize" ) == 0 && value > 0 ) {
+            *outVillageSpawnHalfSize = value;
+            }
+        else if( strcmp( key, "villageRingGateEnabled" ) == 0 ) {
+            *outVillageRingGateEnabled = value != 0;
+            }
+        else if( strcmp( key, "villageRingInnerHalfSize" ) == 0 && value >= 0 ) {
+            *outVillageRingInnerHalfSize = value;
+            }
+        else if( strcmp( key, "villageRingOuterHalfSize" ) == 0 && value > 0 ) {
+            *outVillageRingOuterHalfSize = value;
+            }
+        }
+
+    fclose( f );
+    }
+
+
+static void loadNpcStructurePlacements( const char *inPlacementsFilePath,
+                                        SimpleVector<char*> *outNames,
                                         SimpleVector<GridPos> *outPositions ) {
-    FILE *f = fopen( "structures/npc/placements.txt", "r" );
+    FILE *f = fopen( inPlacementsFilePath, "r" );
     if( f == NULL ) {
         return;
         }
@@ -9821,9 +9877,10 @@ static void loadNpcStructurePlacements( SimpleVector<char*> *outNames,
     }
 
 
-static void saveNpcStructurePlacements( SimpleVector<char*> *names,
+static void saveNpcStructurePlacements( const char *inPlacementsFilePath,
+                                        SimpleVector<char*> *names,
                                         SimpleVector<GridPos> *positions ) {
-    FILE *f = fopen( "structures/npc/placements.txt", "w" );
+    FILE *f = fopen( inPlacementsFilePath, "w" );
     if( f == NULL ) {
         return;
         }
@@ -9837,41 +9894,23 @@ static void saveNpcStructurePlacements( SimpleVector<char*> *names,
     }
 
 
-static int findNpcStructurePlacementIndex( SimpleVector<char*> *names,
-                                           const char *inPath ) {
-    for( int i=0; i<names->size(); i++ ) {
-        if( strcmp( names->getElementDirect( i ), inPath ) == 0 ) {
-            return i;
-            }
+static char isVillageScenePath( const char *inPath, int *outIndex ) {
+    if( inPath == NULL ) {
+        return false;
         }
-    return -1;
-    }
 
+    const char *name = inPath;
+    const char *lastSlash = strrchr( inPath, '/' );
+    if( lastSlash != NULL ) {
+        name = lastSlash + 1;
+        }
 
-static char npcStructureTooClose( int inX, int inY,
-                                  SimpleVector<char*> *names,
-                                  SimpleVector<GridPos> *positions,
-                                  const char *inPath,
-                                  int inMinDist,
-                                  int inSameTypeMinDist ) {
-    int minDistSq = inMinDist * inMinDist;
-    int sameTypeMinDistSq = inSameTypeMinDist * inSameTypeMinDist;
-
-    for( int i=0; i<positions->size(); i++ ) {
-        GridPos p = positions->getElementDirect( i );
-        int dx = inX - p.x;
-        int dy = inY - p.y;
-        int distSq = dx * dx + dy * dy;
-
-        if( distSq < minDistSq ) {
-            return true;
+    int index = -1;
+    if( sscanf( name, "village_%d.txt", &index ) == 1 && index >= 0 ) {
+        if( outIndex != NULL ) {
+            *outIndex = index;
             }
-
-        if( inPath != NULL &&
-            strcmp( names->getElementDirect( i ), inPath ) == 0 &&
-            distSq < sameTypeMinDistSq ) {
-            return true;
-            }
+        return true;
         }
 
     return false;
@@ -9879,10 +9918,20 @@ static char npcStructureTooClose( int inX, int inY,
 
 
 static void spawnNpcStructures() {
+    const char *npcFolderName = "structures/npc";
+
+    int npcMaxSpawnHalfSize = 20000;
+    int npcVillageCenterSpacing = 2000;
+    int npcVillageSpawnHalfSize = 20000;
+    int villageRingGateEnabled = 0;
+    int villageRingInnerHalfSize = 10000;
+    int villageRingOuterHalfSize = 15000;
+
     File *npcFolder = new File( NULL, "structures/npc" );
     if( !npcFolder->exists() || !npcFolder->isDirectory() ) {
         delete npcFolder;
         npcFolder = new File( NULL, "../OneLifeData7/structures/npc" );
+        npcFolderName = "../OneLifeData7/structures/npc";
         }
 
     if( !npcFolder->exists() || !npcFolder->isDirectory() ) {
@@ -9900,15 +9949,67 @@ static void spawnNpcStructures() {
 
     SimpleVector<char*> placedNames;
     SimpleVector<GridPos> placedPositions;
-    loadNpcStructurePlacements( &placedNames, &placedPositions );
+    char *placementsFilePath = autoSprintf( "%s/placements.txt", npcFolderName );
+    loadNpcStructurePlacements( placementsFilePath, &placedNames, &placedPositions );
 
-    int minDist = 10;
-    int maxDist = 10;
-    int sameTypeMinDist = 10;
+    char *spawnRulesPath = autoSprintf( "%s/spawn_rules.txt", npcFolderName );
+    loadNpcSpawnGlobalSettings( spawnRulesPath,
+                                &npcMaxSpawnHalfSize,
+                                &npcVillageCenterSpacing,
+                                &npcVillageSpawnHalfSize,
+                                &villageRingGateEnabled,
+                                &villageRingInnerHalfSize,
+                                &villageRingOuterHalfSize );
+    delete [] spawnRulesPath;
 
-    int safeR = barrierRadius - 2;
-    if( safeR < maxDist + 10 ) {
-        safeR = maxDist + 10;
+    SimpleVector<char*> villageScenePaths;
+    SimpleVector<int> villageSceneIndices;
+
+    for( int i=0; i<npcFiles.size(); i++ ) {
+        char *path = npcFiles.getElementDirect( i );
+
+        int villageIndex = -1;
+        if( ! isVillageScenePath( path, &villageIndex ) ) {
+            continue;
+            }
+
+        villageScenePaths.push_back( stringDuplicate( path ) );
+        villageSceneIndices.push_back( villageIndex );
+        }
+
+    if( villageScenePaths.size() == 0 ) {
+        freeStringVector( &npcFiles );
+        freeStringVector( &placedNames );
+        delete [] placementsFilePath;
+        return;
+        }
+
+    for( int i=0; i<villageSceneIndices.size(); i++ ) {
+        int minI = i;
+        for( int j=i+1; j<villageSceneIndices.size(); j++ ) {
+            if( villageSceneIndices.getElementDirect( j ) <
+                villageSceneIndices.getElementDirect( minI ) ) {
+                minI = j;
+                }
+            }
+
+        if( minI != i ) {
+            villageSceneIndices.swap( i, minI );
+            villageScenePaths.swap( i, minI );
+            }
+        }
+
+    int safeR = npcVillageSpawnHalfSize;
+    if( safeR < 1 ) {
+        safeR = npcMaxSpawnHalfSize;
+        }
+
+    if( npcVillageCenterSpacing < 1 ) {
+        npcVillageCenterSpacing = 1;
+        }
+
+    if( villageRingOuterHalfSize < villageRingInnerHalfSize ) {
+        villageRingOuterHalfSize = villageRingInnerHalfSize;
         }
 
     CustomRandomSource placementRandSource(
@@ -9918,64 +10019,108 @@ static void spawnNpcStructures() {
 
     skipTrackingMapChanges = true;
 
-    // ensure existing placements are loaded
+    // filter placements to village scene entries only
+    SimpleVector<char*> filteredNames;
+    SimpleVector<GridPos> filteredPositions;
+
     for( int i=0; i<placedNames.size() && i<placedPositions.size(); i++ ) {
-        GridPos p = placedPositions.getElementDirect( i );
         char *path = placedNames.getElementDirect( i );
-        loadStructureFromFolder( "structures/npc", path, p.x, p.y );
-        }
-
-    for( int i=0; i<npcFiles.size(); i++ ) {
-        char *path = npcFiles.getElementDirect( i );
-
-        if( findNpcStructurePlacementIndex( &placedNames, path ) != -1 ) {
+        int villageIndex = -1;
+        if( ! isVillageScenePath( path, &villageIndex ) ) {
             continue;
             }
 
-        char placed = false;
+        filteredNames.push_back( stringDuplicate( path ) );
+        filteredPositions.push_back( placedPositions.getElementDirect( i ) );
+        }
 
-        for( int attempt=0; attempt<200 && !placed; attempt++ ) {
-            int x = 0;
-            int y = 0;
+    freeStringVector( &placedNames );
+    placedNames = filteredNames;
+    placedPositions = filteredPositions;
 
-            if( placedPositions.size() > 0 ) {
-                int anchorI = placementRandSource.getRandomBoundedInt(
-                    0, placedPositions.size() - 1 );
-                GridPos anchor = placedPositions.getElementDirect( anchorI );
+    // load already-placed villages
+    for( int i=0; i<placedNames.size() && i<placedPositions.size(); i++ ) {
+        GridPos p = placedPositions.getElementDirect( i );
+        char *path = placedNames.getElementDirect( i );
+        loadStructureFromFolder( npcFolderName, path, p.x, p.y );
+        }
 
-                int dist = placementRandSource.getRandomBoundedInt(
-                    minDist, maxDist );
-                double angle = placementRandSource.getRandomBoundedDouble(
-                    0, 2 * M_PI );
+    SimpleVector<int> sceneBag;
+    int bagIndex = 0;
 
-                x = anchor.x + lrint( cos( angle ) * dist );
-                y = anchor.y + lrint( sin( angle ) * dist );
+    for( int i=0; i<villageScenePaths.size(); i++ ) {
+        sceneBag.push_back( i );
+        }
+
+    for( int x=-safeR; x<=safeR; x+=npcVillageCenterSpacing ) {
+        for( int y=-safeR; y<=safeR; y+=npcVillageCenterSpacing ) {
+            if( villageRingGateEnabled ) {
+                int ringR = abs( x );
+                if( abs( y ) > ringR ) {
+                    ringR = abs( y );
+                    }
+
+                if( ringR < villageRingInnerHalfSize ||
+                    ringR > villageRingOuterHalfSize ) {
+                    continue;
+                    }
                 }
-            else {
-                x = placementRandSource.getRandomBoundedInt( -safeR, safeR );
-                y = placementRandSource.getRandomBoundedInt( -safeR, safeR );
+
+            if( bagIndex >= sceneBag.size() ) {
+                for( int i=0; i<sceneBag.size(); i++ ) {
+                    int swapI = placementRandSource.getRandomBoundedInt(
+                        i, sceneBag.size() - 1 );
+                    sceneBag.swap( i, swapI );
+                    }
+                bagIndex = 0;
                 }
 
-            if( x > safeR || x < -safeR || y > safeR || y < -safeR ) {
+            int sceneI = sceneBag.getElementDirect( bagIndex );
+            bagIndex ++;
+            char *scenePath = villageScenePaths.getElementDirect( sceneI );
+
+            char alreadyPlaced = false;
+            for( int pI=0; pI<placedPositions.size() && pI<placedNames.size(); pI++ ) {
+                GridPos p = placedPositions.getElementDirect( pI );
+                if( abs( p.x - x ) <= 250 && abs( p.y - y ) <= 250 ) {
+                    alreadyPlaced = true;
+                    break;
+                    }
+                }
+
+            if( alreadyPlaced ) {
                 continue;
                 }
 
-            if( getMapObjectRaw( x, y ) != 0 ) {
-                continue;
+            char placed = false;
+            for( int attempt=0; attempt<25 && !placed; attempt++ ) {
+                int px = x + placementRandSource.getRandomBoundedInt( -200, 200 );
+                int py = y + placementRandSource.getRandomBoundedInt( -200, 200 );
+
+                if( px > safeR || px < -safeR || py > safeR || py < -safeR ) {
+                    continue;
+                    }
+
+                if( getMapObjectRaw( px, py ) != 0 ) {
+                    continue;
+                    }
+
+                if( loadStructureFromFolder( npcFolderName, scenePath, px, py ) ) {
+                    GridPos p = { px, py };
+                    placedPositions.push_back( p );
+                    placedNames.push_back( stringDuplicate( scenePath ) );
+                    anyPlaced = true;
+                    placed = true;
+                    }
                 }
 
-            if( npcStructureTooClose( x, y,
-                                      &placedNames, &placedPositions,
-                                      path, minDist, sameTypeMinDist ) ) {
-                continue;
-                }
-
-            if( loadStructureFromFolder( "structures/npc", path, x, y ) ) {
-                GridPos p = { x, y };
-                placedPositions.push_back( p );
-                placedNames.push_back( stringDuplicate( path ) );
-                placed = true;
-                anyPlaced = true;
+            if( !placed ) {
+                if( loadStructureFromFolder( npcFolderName, scenePath, x, y ) ) {
+                    GridPos p = { x, y };
+                    placedPositions.push_back( p );
+                    placedNames.push_back( stringDuplicate( scenePath ) );
+                    anyPlaced = true;
+                    }
                 }
             }
         }
@@ -9983,10 +10128,15 @@ static void spawnNpcStructures() {
     skipTrackingMapChanges = false;
 
     if( anyPlaced ) {
-        saveNpcStructurePlacements( &placedNames, &placedPositions );
+        saveNpcStructurePlacements( placementsFilePath,
+                                    &placedNames,
+                                    &placedPositions );
         }
 
+    delete [] placementsFilePath;
+
     freeStringVector( &npcFiles );
+    freeStringVector( &villageScenePaths );
     freeStringVector( &placedNames );
     }
  
