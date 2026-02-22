@@ -1348,6 +1348,15 @@ static void mapCacheInsert( int inX, int inY, int inID,
    
  
 static int getBaseMapCallCount = 0;
+
+
+// NPC structure placement
+class File;
+static void spawnNpcStructures();
+static void spawnFrontierStructures();
+static void spawnMonumentStructures();
+static char loadStructureSceneFromFile( File *inFile,
+                                        int inOffsetX, int inOffsetY );
  
  
 static int getBaseMap( int inX, int inY, char *outGridPlacement = NULL ) {
@@ -2250,7 +2259,7 @@ int cleanMap() {
     AppLog::info( "\nCleaning map of objects that have been removed..." );
    
     skipTrackingMapChanges = true;
-   
+
     DB_Iterator dbi;
    
    
@@ -4115,6 +4124,12 @@ char initMap() {
         specialPlacements->deallocateStringElements();
         delete specialPlacements;
         }
+
+
+    // NPC structure placement (from structures-npc)
+    spawnNpcStructures();
+    spawnFrontierStructures();
+    spawnMonumentStructures();
    
    
    
@@ -9344,6 +9359,1091 @@ char loadTutorialStep( TutorialLoadProgress *inTutorialLoad,
         inTutorialLoad->file = NULL;
         }
     return moreLeft;
+    }
+
+
+static char loadStructureFromFolder( const char *inFolderName,
+                                     const char *inMapFileName,
+                                     int inOffsetX, int inOffsetY ) {
+
+    if( inFolderName == NULL || inMapFileName == NULL ) {
+        return false;
+        }
+
+    char *safeName = stringDuplicate( inMapFileName );
+    for( int i=0; safeName[i] != '\0'; i++ ) {
+        if( safeName[i] == '\\' ) {
+            safeName[i] = '/';
+            }
+        }
+
+    if( safeName[0] == '/' || strstr( safeName, ".." ) != NULL ||
+        strstr( safeName, ":" ) != NULL ) {
+        delete [] safeName;
+        return false;
+        }
+
+    File *structureFolder = new File( NULL, inFolderName );
+
+    if( !structureFolder->exists() || !structureFolder->isDirectory() ) {
+        delete structureFolder;
+        char *altPath = autoSprintf( "../OneLifeData7/%s", inFolderName );
+        structureFolder = new File( NULL, altPath );
+        delete [] altPath;
+        }
+
+    if( !structureFolder->exists() || !structureFolder->isDirectory() ) {
+        delete structureFolder;
+        delete [] safeName;
+        return false;
+        }
+
+    File *mapFile = structureFolder->getChildFile( safeName );
+    delete [] safeName;
+
+    if( mapFile == NULL || !mapFile->exists() || mapFile->isDirectory() ) {
+        delete mapFile;
+        return false;
+        }
+
+    char *fileName = mapFile->getFullFileName();
+
+    FILE *file = fopen( fileName, "r" );
+
+    delete [] fileName;
+
+    if( file == NULL ) {
+        delete mapFile;
+        delete structureFolder;
+        return false;
+        }
+
+    // sniff first non-empty line
+    char firstLine[256];
+    firstLine[0] = '\0';
+    while( fgets( firstLine, sizeof( firstLine ), file ) != NULL ) {
+        if( firstLine[0] != '\0' && firstLine[0] != '\n' &&
+            firstLine[0] != '\r' ) {
+            break;
+            }
+        }
+
+    rewind( file );
+
+    char sceneFormat = false;
+    if( strstr( firstLine, "w=" ) == firstLine ) {
+        sceneFormat = true;
+        }
+
+    char loaded = false;
+    if( sceneFormat ) {
+        fclose( file );
+        loaded = loadStructureSceneFromFile( mapFile, inOffsetX, inOffsetY );
+        }
+    else {
+        // load whole file in one pass
+        loadIntoMapFromFile( file, inOffsetX, inOffsetY, 0 );
+        fclose( file );
+        loaded = true;
+        }
+
+    delete mapFile;
+    delete structureFolder;
+
+    return loaded;
+    }
+
+
+char loadStructureFromFile( const char *inMapFileName,
+                            int inOffsetX, int inOffsetY ) {
+    return loadStructureFromFolder( "structures",
+                                    inMapFileName,
+                                    inOffsetX, inOffsetY );
+    }
+
+
+static void freeStringVector( SimpleVector<char*> *inVec ) {
+    for( int i=0; i<inVec->size(); i++ ) {
+        char *s = inVec->getElementDirect( i );
+        delete [] s;
+        }
+    inVec->deleteAll();
+    }
+
+
+static int scanSceneCell( char **inLines, int inNumLines, int inIndex,
+                          char inHasBiome, int *outBiome, int *outOID,
+                          SimpleVector<int> *outContained,
+                          SimpleVector< SimpleVector<int> > *outSubContained ) {
+    int i = inIndex;
+
+    if( inHasBiome && i < inNumLines ) {
+        int biome = -1;
+        if( sscanf( inLines[i], "biome=%d", &biome ) == 1 ) {
+            *outBiome = biome;
+            i++;
+            }
+        }
+
+    if( i >= inNumLines ) {
+        return i;
+        }
+
+    if( strcmp( inLines[i], "empty" ) == 0 ) {
+        *outOID = 0;
+        i++;
+        return i;
+        }
+
+    int oID = 0;
+    if( sscanf( inLines[i], "oID=%d", &oID ) == 1 ) {
+        *outOID = oID;
+        i++;
+        }
+
+    // heldID
+    int temp = 0;
+    if( i < inNumLines && sscanf( inLines[i], "heldID=%d", &temp ) == 1 ) {
+        i++;
+        }
+
+    int numCont = 0;
+    if( i < inNumLines && sscanf( inLines[i], "numCont=%d", &numCont ) == 1 ) {
+        i++;
+        }
+
+    for( int c=0; c<numCont && i < inNumLines; c++ ) {
+        int contID = 0;
+        if( sscanf( inLines[i], "cont=%d", &contID ) == 1 ) {
+            i++;
+            }
+        int numSub = 0;
+        if( i < inNumLines && sscanf( inLines[i], "numSubCont=%d", &numSub ) == 1 ) {
+            i++;
+            }
+        SimpleVector<int> subVec;
+        for( int s=0; s<numSub && i < inNumLines; s++ ) {
+            int subID = 0;
+            if( sscanf( inLines[i], "subCont=%d", &subID ) == 1 ) {
+                subVec.push_back( subID );
+                }
+            i++;
+            }
+        outContained->push_back( contID );
+        outSubContained->push_back( subVec );
+        }
+
+    // skip to end of cell block
+    while( i < inNumLines ) {
+        if( strstr( inLines[i], "moveDelayTime=" ) != NULL ) {
+            i++;
+            break;
+            }
+        // if the file is truncated, avoid infinite scan
+        if( strstr( inLines[i], "x=" ) == inLines[i] ) {
+            break;
+            }
+        i++;
+        }
+
+    return i;
+    }
+
+
+static char loadStructureSceneFromFile( File *inFile,
+                                        int inOffsetX, int inOffsetY ) {
+    if( inFile == NULL ) {
+        return false;
+        }
+
+    char *fileText = inFile->readFileContents();
+    if( fileText == NULL ) {
+        return false;
+        }
+
+    int numLines = 0;
+    char **lines = split( fileText, "\n", &numLines );
+    delete [] fileText;
+
+    if( numLines < 4 ) {
+        for( int i=0; i<numLines; i++ ) {
+            delete [] lines[i];
+            }
+        delete [] lines;
+        return false;
+        }
+
+    int next = 0;
+    int w = 0;
+    int h = 0;
+    int originX = 0;
+    int originY = 0;
+
+    sscanf( lines[next], "w=%d", &w );
+    next++;
+    sscanf( lines[next], "h=%d", &h );
+    next++;
+
+    if( next < numLines && strstr( lines[next], "origin=" ) != NULL ) {
+        sscanf( lines[next], "origin=%d,%d", &originX, &originY );
+        next++;
+        }
+
+    char floorPresent = false;
+    if( next < numLines && strstr( lines[next], "floorPresent" ) != NULL ) {
+        floorPresent = true;
+        next++;
+        }
+
+    skipTrackingMapChanges = true;
+
+    // compute bounds of actual content (base objects or floors)
+    int minX = 1000000000;
+    int maxX = -1000000000;
+    int minY = 1000000000;
+    int maxY = -1000000000;
+
+    int boundsNext = next;
+    int bx = 0;
+    int by = 0;
+    int bRead = 0;
+    if( boundsNext < numLines ) {
+        bRead = sscanf( lines[boundsNext], "x=%d,y=%d", &bx, &by );
+        boundsNext++;
+        }
+
+    while( bRead == 2 && boundsNext <= numLines ) {
+        int baseBiome = -1;
+        int baseID = 0;
+        int floorID = 0;
+
+        SimpleVector<int> contained;
+        SimpleVector< SimpleVector<int> > subContained;
+
+        boundsNext = scanSceneCell( lines, numLines, boundsNext,
+                                    true, &baseBiome, &baseID,
+                                    &contained, &subContained );
+
+        int dummyBiome = -1;
+        int dummyID = 0;
+        SimpleVector<int> dummyContained;
+        SimpleVector< SimpleVector<int> > dummySubContained;
+        boundsNext = scanSceneCell( lines, numLines, boundsNext,
+                                    false, &dummyBiome, &dummyID,
+                                    &dummyContained, &dummySubContained );
+
+        if( floorPresent ) {
+            SimpleVector<int> floorContained;
+            SimpleVector< SimpleVector<int> > floorSubContained;
+            int floorBiome = -1;
+            boundsNext = scanSceneCell( lines, numLines, boundsNext,
+                                        false, &floorBiome, &floorID,
+                                        &floorContained, &floorSubContained );
+            }
+
+        if( baseID > 0 || floorID > 0 ) {
+            if( bx < minX ) minX = bx;
+            if( bx > maxX ) maxX = bx;
+            if( by < minY ) minY = by;
+            if( by > maxY ) maxY = by;
+            }
+
+        if( boundsNext < numLines ) {
+            bRead = sscanf( lines[boundsNext], "x=%d,y=%d", &bx, &by );
+            boundsNext++;
+            }
+        else {
+            bRead = 0;
+            }
+        }
+
+    if( minX <= maxX && minY <= maxY ) {
+        for( int cy=minY; cy<=maxY; cy++ ) {
+            for( int cx=minX; cx<=maxX; cx++ ) {
+                int worldX = inOffsetX + ( cx - originX );
+                int worldY = inOffsetY + ( originY - cy );
+                clearAllContained( worldX, worldY );
+                setMapObject( worldX, worldY, 0 );
+                }
+            }
+        }
+
+    int x = 0;
+    int y = 0;
+    int numRead = 0;
+    if( next < numLines ) {
+        numRead = sscanf( lines[next], "x=%d,y=%d", &x, &y );
+        next++;
+        }
+
+    while( numRead == 2 && next <= numLines ) {
+        int baseBiome = -1;
+        int baseID = 0;
+        int floorID = 0;
+
+        SimpleVector<int> contained;
+        SimpleVector< SimpleVector<int> > subContained;
+
+        next = scanSceneCell( lines, numLines, next,
+                      true, &baseBiome, &baseID,
+                      &contained, &subContained );
+
+        // skip person cell without overwriting base object
+        int dummyBiome = -1;
+        int dummyID = 0;
+        SimpleVector<int> dummyContained;
+        SimpleVector< SimpleVector<int> > dummySubContained;
+        next = scanSceneCell( lines, numLines, next,
+                      false, &dummyBiome, &dummyID,
+                      &dummyContained, &dummySubContained );
+
+        if( floorPresent ) {
+            SimpleVector<int> floorContained;
+            SimpleVector< SimpleVector<int> > floorSubContained;
+            int floorBiome = -1;
+            next = scanSceneCell( lines, numLines, next,
+                                  false, &floorBiome, &floorID,
+                                  &floorContained, &floorSubContained );
+            }
+
+        int worldX = inOffsetX + ( x - originX );
+        int worldY = inOffsetY + ( originY - y );
+
+        if( baseBiome != -1 ) {
+            biomeDBPut( worldX, worldY, baseBiome, baseBiome, 0.5 );
+            }
+
+        if( floorID > 0 ) {
+            setMapFloor( worldX, worldY, floorID );
+            }
+
+        if( baseID > 0 ) {
+            setMapObject( worldX, worldY, baseID );
+
+            int *contArray = contained.getElementArray();
+            setContained( worldX, worldY, contained.size(), contArray );
+            delete [] contArray;
+
+            for( int c=0; c<contained.size(); c++ ) {
+                int *subArray = subContained.getElement( c )->getElementArray();
+                setContained( worldX, worldY,
+                              subContained.getElement(c)->size(),
+                              subArray, c + 1 );
+                delete [] subArray;
+                }
+            }
+
+        if( next < numLines ) {
+            numRead = sscanf( lines[next], "x=%d,y=%d", &x, &y );
+            next++;
+            }
+        else {
+            numRead = 0;
+            }
+        }
+
+    skipTrackingMapChanges = false;
+
+    for( int i=0; i<numLines; i++ ) {
+        delete [] lines[i];
+        }
+    delete [] lines;
+
+    return true;
+    }
+
+
+static void collectStructureFilesRecursive( File *inDir,
+                                            const char *inPrefix,
+                                            SimpleVector<char*> *outList ) {
+    if( inDir == NULL || !inDir->exists() || !inDir->isDirectory() ) {
+        return;
+        }
+
+    int numChildFiles = 0;
+    File **childFiles = inDir->getChildFiles( &numChildFiles );
+
+    for( int i=0; i<numChildFiles; i++ ) {
+        File *child = childFiles[i];
+        char *name = child->getFileName();
+
+        if( child->isDirectory() ) {
+            char *newPrefix = NULL;
+            if( inPrefix != NULL && strlen( inPrefix ) > 0 ) {
+                newPrefix = autoSprintf( "%s/%s", inPrefix, name );
+                }
+            else {
+                newPrefix = stringDuplicate( name );
+                }
+
+            collectStructureFilesRecursive( child, newPrefix, outList );
+
+            delete [] newPrefix;
+            }
+        else {
+            int nameLen = strlen( name );
+            if( nameLen >= 4 &&
+                strcmp( &( name[ nameLen - 4 ] ), ".txt" ) == 0 ) {
+
+                char *relPath = NULL;
+                if( inPrefix != NULL && strlen( inPrefix ) > 0 ) {
+                    relPath = autoSprintf( "%s/%s", inPrefix, name );
+                    }
+                else {
+                    relPath = stringDuplicate( name );
+                    }
+
+                outList->push_back( relPath );
+                }
+            }
+
+        delete [] name;
+        delete child;
+        }
+
+    delete [] childFiles;
+    }
+
+
+static void loadNpcSpawnGlobalSettings( const char *inRulesFilePath,
+                                        int *outMaxSpawnHalfSize,
+                                        int *outVillageCenterSpacing,
+                                        int *outVillageSpawnHalfSize,
+                                        int *outVillageRingGateEnabled,
+                                        int *outVillageRingInnerHalfSize,
+                                        int *outVillageRingOuterHalfSize ) {
+    FILE *f = fopen( inRulesFilePath, "r" );
+    if( f == NULL ) {
+        return;
+        }
+
+    char line[512];
+
+    while( fgets( line, sizeof( line ), f ) != NULL ) {
+        if( line[0] == '#' || line[0] == '\n' || line[0] == '\r' ) {
+            continue;
+            }
+
+        char scope[64];
+        char key[64];
+        int value = 0;
+
+        if( sscanf( line, "%63s %63s %d", scope, key, &value ) != 3 ) {
+            continue;
+            }
+
+        if( strcmp( scope, "GLOBAL" ) != 0 ) {
+            continue;
+            }
+
+        if( strcmp( key, "maxSpawnHalfSize" ) == 0 && value > 0 ) {
+            *outMaxSpawnHalfSize = value;
+            }
+        else if( strcmp( key, "villageCenterSpacing" ) == 0 && value > 0 ) {
+            *outVillageCenterSpacing = value;
+            }
+        else if( strcmp( key, "villageSpawnHalfSize" ) == 0 && value > 0 ) {
+            *outVillageSpawnHalfSize = value;
+            }
+        else if( strcmp( key, "villageRingGateEnabled" ) == 0 ) {
+            *outVillageRingGateEnabled = value != 0;
+            }
+        else if( strcmp( key, "villageRingInnerHalfSize" ) == 0 && value >= 0 ) {
+            *outVillageRingInnerHalfSize = value;
+            }
+        else if( strcmp( key, "villageRingOuterHalfSize" ) == 0 && value > 0 ) {
+            *outVillageRingOuterHalfSize = value;
+            }
+        }
+
+    fclose( f );
+    }
+
+
+static void loadNpcStructurePlacements( const char *inPlacementsFilePath,
+                                        SimpleVector<char*> *outNames,
+                                        SimpleVector<GridPos> *outPositions ) {
+    FILE *f = fopen( inPlacementsFilePath, "r" );
+    if( f == NULL ) {
+        return;
+        }
+
+    char path[1024];
+    int x, y;
+
+    while( fscanf( f, "%1023s %d %d", path, &x, &y ) == 3 ) {
+        outNames->push_back( stringDuplicate( path ) );
+        GridPos p = { x, y };
+        outPositions->push_back( p );
+        }
+
+    fclose( f );
+    }
+
+
+static void saveNpcStructurePlacements( const char *inPlacementsFilePath,
+                                        SimpleVector<char*> *names,
+                                        SimpleVector<GridPos> *positions ) {
+    FILE *f = fopen( inPlacementsFilePath, "w" );
+    if( f == NULL ) {
+        return;
+        }
+
+    for( int i=0; i<names->size() && i<positions->size(); i++ ) {
+        GridPos p = positions->getElementDirect( i );
+        fprintf( f, "%s %d %d\n", names->getElementDirect( i ), p.x, p.y );
+        }
+
+    fclose( f );
+    }
+
+
+static char isVillageScenePath( const char *inPath, int *outIndex ) {
+    if( inPath == NULL ) {
+        return false;
+        }
+
+    const char *name = inPath;
+    const char *lastSlash = strrchr( inPath, '/' );
+    if( lastSlash != NULL ) {
+        name = lastSlash + 1;
+        }
+
+    int index = -1;
+    if( sscanf( name, "village_%d.txt", &index ) == 1 && index >= 0 ) {
+        if( outIndex != NULL ) {
+            *outIndex = index;
+            }
+        return true;
+        }
+
+    return false;
+    }
+
+
+static void loadFrontierSpawnSettings( const char *inRulesFilePath,
+                                       int *outCenterSpacing,
+                                       int *outJitter,
+                                       int *outRingInnerHalfSize,
+                                       int *outRingOuterHalfSize,
+                                       int *outRingGateEnabled ) {
+    FILE *f = fopen( inRulesFilePath, "r" );
+    if( f == NULL ) {
+        return;
+        }
+
+    char line[512];
+
+    while( fgets( line, sizeof( line ), f ) != NULL ) {
+        if( line[0] == '#' || line[0] == '\n' || line[0] == '\r' ) {
+            continue;
+            }
+
+        char scope[64];
+        char key[64];
+        int value = 0;
+
+        if( sscanf( line, "%63s %63s %d", scope, key, &value ) != 3 ) {
+            continue;
+            }
+
+        if( strcmp( scope, "GLOBAL" ) != 0 ) {
+            continue;
+            }
+
+        if( strcmp( key, "frontierCenterSpacing" ) == 0 && value > 0 ) {
+            *outCenterSpacing = value;
+            }
+        else if( strcmp( key, "frontierJitter" ) == 0 && value >= 0 ) {
+            *outJitter = value;
+            }
+        else if( strcmp( key, "frontierRingInnerHalfSize" ) == 0 && value >= 0 ) {
+            *outRingInnerHalfSize = value;
+            }
+        else if( strcmp( key, "frontierRingOuterHalfSize" ) == 0 && value > 0 ) {
+            *outRingOuterHalfSize = value;
+            }
+        else if( strcmp( key, "frontierRingGateEnabled" ) == 0 ) {
+            *outRingGateEnabled = value != 0;
+            }
+        }
+
+    fclose( f );
+    }
+
+
+static char isFrontierScenePath( const char *inPath ) {
+    if( inPath == NULL ) {
+        return false;
+        }
+
+    const char *name = inPath;
+    const char *lastSlash = strrchr( inPath, '/' );
+    if( lastSlash != NULL ) {
+        name = lastSlash + 1;
+        }
+
+    if( strcmp( name, "placements.txt" ) == 0 ||
+        strcmp( name, "spawn_rules.txt" ) == 0 ) {
+        return false;
+        }
+
+    int len = strlen( name );
+    if( len < 4 || strcmp( &( name[ len - 4 ] ), ".txt" ) != 0 ) {
+        return false;
+        }
+
+    return true;
+    }
+
+
+static void spawnNpcStructures() {
+    const char *npcFolderName = "structures/npc";
+
+    int npcMaxSpawnHalfSize = 20000;
+    int npcVillageCenterSpacing = 2000;
+    int npcVillageSpawnHalfSize = 20000;
+    int villageRingGateEnabled = 0;
+    int villageRingInnerHalfSize = 10000;
+    int villageRingOuterHalfSize = 15000;
+
+    File *npcFolder = new File( NULL, "structures/npc" );
+    if( !npcFolder->exists() || !npcFolder->isDirectory() ) {
+        delete npcFolder;
+        npcFolder = new File( NULL, "../OneLifeData7/structures/npc" );
+        npcFolderName = "../OneLifeData7/structures/npc";
+        }
+
+    if( !npcFolder->exists() || !npcFolder->isDirectory() ) {
+        delete npcFolder;
+        return;
+        }
+
+    SimpleVector<char*> npcFiles;
+    collectStructureFilesRecursive( npcFolder, "", &npcFiles );
+    delete npcFolder;
+
+    if( npcFiles.size() == 0 ) {
+        return;
+        }
+
+    SimpleVector<char*> placedNames;
+    SimpleVector<GridPos> placedPositions;
+    char *placementsFilePath = autoSprintf( "%s/placements.txt", npcFolderName );
+    loadNpcStructurePlacements( placementsFilePath, &placedNames, &placedPositions );
+
+    char *spawnRulesPath = autoSprintf( "%s/spawn_rules.txt", npcFolderName );
+    loadNpcSpawnGlobalSettings( spawnRulesPath,
+                                &npcMaxSpawnHalfSize,
+                                &npcVillageCenterSpacing,
+                                &npcVillageSpawnHalfSize,
+                                &villageRingGateEnabled,
+                                &villageRingInnerHalfSize,
+                                &villageRingOuterHalfSize );
+    delete [] spawnRulesPath;
+
+    SimpleVector<char*> villageScenePaths;
+    SimpleVector<int> villageSceneIndices;
+
+    for( int i=0; i<npcFiles.size(); i++ ) {
+        char *path = npcFiles.getElementDirect( i );
+
+        int villageIndex = -1;
+        if( ! isVillageScenePath( path, &villageIndex ) ) {
+            continue;
+            }
+
+        villageScenePaths.push_back( stringDuplicate( path ) );
+        villageSceneIndices.push_back( villageIndex );
+        }
+
+    if( villageScenePaths.size() == 0 ) {
+        freeStringVector( &npcFiles );
+        freeStringVector( &placedNames );
+        delete [] placementsFilePath;
+        return;
+        }
+
+    for( int i=0; i<villageSceneIndices.size(); i++ ) {
+        int minI = i;
+        for( int j=i+1; j<villageSceneIndices.size(); j++ ) {
+            if( villageSceneIndices.getElementDirect( j ) <
+                villageSceneIndices.getElementDirect( minI ) ) {
+                minI = j;
+                }
+            }
+
+        if( minI != i ) {
+            villageSceneIndices.swap( i, minI );
+            villageScenePaths.swap( i, minI );
+            }
+        }
+
+    int safeR = npcVillageSpawnHalfSize;
+    if( safeR < 1 ) {
+        safeR = npcMaxSpawnHalfSize;
+        }
+
+    if( npcVillageCenterSpacing < 1 ) {
+        npcVillageCenterSpacing = 1;
+        }
+
+    if( villageRingOuterHalfSize < villageRingInnerHalfSize ) {
+        villageRingOuterHalfSize = villageRingInnerHalfSize;
+        }
+
+    CustomRandomSource placementRandSource(
+        (int)( biomeRandSeedA ^ biomeRandSeedB ^ 0x4E5043 ) );
+
+    char anyPlaced = false;
+
+    skipTrackingMapChanges = true;
+
+    // filter placements to village scene entries only
+    SimpleVector<char*> filteredNames;
+    SimpleVector<GridPos> filteredPositions;
+
+    for( int i=0; i<placedNames.size() && i<placedPositions.size(); i++ ) {
+        char *path = placedNames.getElementDirect( i );
+        int villageIndex = -1;
+        if( ! isVillageScenePath( path, &villageIndex ) ) {
+            continue;
+            }
+
+        filteredNames.push_back( stringDuplicate( path ) );
+        filteredPositions.push_back( placedPositions.getElementDirect( i ) );
+        }
+
+    freeStringVector( &placedNames );
+    placedNames = filteredNames;
+    placedPositions = filteredPositions;
+
+    // load already-placed villages
+    for( int i=0; i<placedNames.size() && i<placedPositions.size(); i++ ) {
+        GridPos p = placedPositions.getElementDirect( i );
+        char *path = placedNames.getElementDirect( i );
+        loadStructureFromFolder( npcFolderName, path, p.x, p.y );
+        }
+
+    SimpleVector<int> sceneBag;
+    int bagIndex = 0;
+
+    for( int i=0; i<villageScenePaths.size(); i++ ) {
+        sceneBag.push_back( i );
+        }
+
+    for( int x=-safeR; x<=safeR; x+=npcVillageCenterSpacing ) {
+        for( int y=-safeR; y<=safeR; y+=npcVillageCenterSpacing ) {
+            if( villageRingGateEnabled ) {
+                int ringR = abs( x );
+                if( abs( y ) > ringR ) {
+                    ringR = abs( y );
+                    }
+
+                if( ringR < villageRingInnerHalfSize ||
+                    ringR > villageRingOuterHalfSize ) {
+                    continue;
+                    }
+                }
+
+            if( bagIndex >= sceneBag.size() ) {
+                for( int i=0; i<sceneBag.size(); i++ ) {
+                    int swapI = placementRandSource.getRandomBoundedInt(
+                        i, sceneBag.size() - 1 );
+                    sceneBag.swap( i, swapI );
+                    }
+                bagIndex = 0;
+                }
+
+            int sceneI = sceneBag.getElementDirect( bagIndex );
+            bagIndex ++;
+            char *scenePath = villageScenePaths.getElementDirect( sceneI );
+
+            char alreadyPlaced = false;
+            for( int pI=0; pI<placedPositions.size() && pI<placedNames.size(); pI++ ) {
+                GridPos p = placedPositions.getElementDirect( pI );
+                if( abs( p.x - x ) <= 250 && abs( p.y - y ) <= 250 ) {
+                    alreadyPlaced = true;
+                    break;
+                    }
+                }
+
+            if( alreadyPlaced ) {
+                continue;
+                }
+
+            char placed = false;
+            for( int attempt=0; attempt<25 && !placed; attempt++ ) {
+                int px = x + placementRandSource.getRandomBoundedInt( -200, 200 );
+                int py = y + placementRandSource.getRandomBoundedInt( -200, 200 );
+
+                if( px > safeR || px < -safeR || py > safeR || py < -safeR ) {
+                    continue;
+                    }
+
+                if( getMapObjectRaw( px, py ) != 0 ) {
+                    continue;
+                    }
+
+                if( loadStructureFromFolder( npcFolderName, scenePath, px, py ) ) {
+                    GridPos p = { px, py };
+                    placedPositions.push_back( p );
+                    placedNames.push_back( stringDuplicate( scenePath ) );
+                    anyPlaced = true;
+                    placed = true;
+                    }
+                }
+
+            if( !placed ) {
+                if( loadStructureFromFolder( npcFolderName, scenePath, x, y ) ) {
+                    GridPos p = { x, y };
+                    placedPositions.push_back( p );
+                    placedNames.push_back( stringDuplicate( scenePath ) );
+                    anyPlaced = true;
+                    }
+                }
+            }
+        }
+
+    skipTrackingMapChanges = false;
+
+    if( anyPlaced ) {
+        saveNpcStructurePlacements( placementsFilePath,
+                                    &placedNames,
+                                    &placedPositions );
+        }
+
+    delete [] placementsFilePath;
+
+    freeStringVector( &npcFiles );
+    freeStringVector( &villageScenePaths );
+    freeStringVector( &placedNames );
+    }
+
+
+static void spawnFrontierStructures() {
+    const char *frontierFolderName = "structures/frontierSpawn";
+
+    int centerSpacing = 1000;
+    int jitter = 350;
+    int ringInnerHalfSize = 25000;
+    int ringOuterHalfSize = 35000;
+    int ringGateEnabled = 1;
+
+    File *frontierFolder = new File( NULL, frontierFolderName );
+    if( !frontierFolder->exists() || !frontierFolder->isDirectory() ) {
+        delete frontierFolder;
+        frontierFolder = new File( NULL, "../OneLifeData7/structures/frontierSpawn" );
+        frontierFolderName = "../OneLifeData7/structures/frontierSpawn";
+        }
+
+    if( !frontierFolder->exists() || !frontierFolder->isDirectory() ) {
+        delete frontierFolder;
+        return;
+        }
+
+    SimpleVector<char*> frontierFiles;
+    collectStructureFilesRecursive( frontierFolder, "", &frontierFiles );
+    delete frontierFolder;
+
+    if( frontierFiles.size() == 0 ) {
+        return;
+        }
+
+    char *spawnRulesPath = autoSprintf( "%s/spawn_rules.txt", frontierFolderName );
+    loadFrontierSpawnSettings( spawnRulesPath,
+                               &centerSpacing,
+                               &jitter,
+                               &ringInnerHalfSize,
+                               &ringOuterHalfSize,
+                               &ringGateEnabled );
+    delete [] spawnRulesPath;
+
+    if( centerSpacing < 1 ) {
+        centerSpacing = 1;
+        }
+
+    if( jitter < 0 ) {
+        jitter = 0;
+        }
+
+    if( ringOuterHalfSize < ringInnerHalfSize ) {
+        ringOuterHalfSize = ringInnerHalfSize;
+        }
+
+    int maxHalf = xLimit;
+    if( yLimit < maxHalf ) {
+        maxHalf = yLimit;
+        }
+    if( maxHalf > 2 ) {
+        maxHalf -= 2;
+        }
+
+    if( ringOuterHalfSize > maxHalf ) {
+        ringOuterHalfSize = maxHalf;
+        }
+
+    SimpleVector<char*> scenePaths;
+    for( int i=0; i<frontierFiles.size(); i++ ) {
+        char *path = frontierFiles.getElementDirect( i );
+        if( isFrontierScenePath( path ) ) {
+            scenePaths.push_back( stringDuplicate( path ) );
+            }
+        }
+
+    freeStringVector( &frontierFiles );
+
+    if( scenePaths.size() == 0 ) {
+        return;
+        }
+
+    SimpleVector<char*> placedNames;
+    SimpleVector<GridPos> placedPositions;
+    char *placementsPath = autoSprintf( "%s/placements.txt", frontierFolderName );
+    loadNpcStructurePlacements( placementsPath, &placedNames, &placedPositions );
+
+    char anyPlaced = false;
+
+    for( int i=0; i<placedNames.size() && i<placedPositions.size(); i++ ) {
+        GridPos p = placedPositions.getElementDirect( i );
+        char *path = placedNames.getElementDirect( i );
+        loadStructureFromFolder( frontierFolderName, path, p.x, p.y );
+        }
+
+    CustomRandomSource randSource(
+        (int)( biomeRandSeedA ^ biomeRandSeedB ^ 0x46524F4E ) );
+
+    SimpleVector<int> sceneBag;
+    for( int i=0; i<scenePaths.size(); i++ ) {
+        sceneBag.push_back( i );
+        }
+    int bagIndex = 0;
+
+    for( int x=-ringOuterHalfSize; x<=ringOuterHalfSize; x+=centerSpacing ) {
+        for( int y=-ringOuterHalfSize; y<=ringOuterHalfSize; y+=centerSpacing ) {
+            if( ringGateEnabled ) {
+                int ringR = abs( x );
+                if( abs( y ) > ringR ) {
+                    ringR = abs( y );
+                    }
+
+                if( ringR < ringInnerHalfSize || ringR > ringOuterHalfSize ) {
+                    continue;
+                    }
+                }
+
+            if( bagIndex >= sceneBag.size() ) {
+                for( int i=0; i<sceneBag.size(); i++ ) {
+                    int swapI = randSource.getRandomBoundedInt( i,
+                                                                sceneBag.size() - 1 );
+                    sceneBag.swap( i, swapI );
+                    }
+                bagIndex = 0;
+                }
+
+            int sceneI = sceneBag.getElementDirect( bagIndex );
+            bagIndex ++;
+            char *scenePath = scenePaths.getElementDirect( sceneI );
+
+            char alreadyPlaced = false;
+            int checkRadius = jitter + 120;
+
+            for( int pI=0; pI<placedPositions.size() && pI<placedNames.size(); pI++ ) {
+                GridPos p = placedPositions.getElementDirect( pI );
+                if( abs( p.x - x ) <= checkRadius && abs( p.y - y ) <= checkRadius ) {
+                    alreadyPlaced = true;
+                    break;
+                    }
+                }
+
+            if( alreadyPlaced ) {
+                continue;
+                }
+
+            char placed = false;
+            for( int attempt=0; attempt<40 && !placed; attempt++ ) {
+                int px = x + randSource.getRandomBoundedInt( -jitter, jitter );
+                int py = y + randSource.getRandomBoundedInt( -jitter, jitter );
+
+                if( px > maxHalf || px < -maxHalf || py > maxHalf || py < -maxHalf ) {
+                    continue;
+                    }
+
+                if( getMapObjectRaw( px, py ) != 0 ) {
+                    continue;
+                    }
+
+                if( loadStructureFromFolder( frontierFolderName, scenePath, px, py ) ) {
+                    GridPos p = { px, py };
+                    placedPositions.push_back( p );
+                    placedNames.push_back( stringDuplicate( scenePath ) );
+                    anyPlaced = true;
+                    placed = true;
+                    }
+                }
+            }
+        }
+
+    if( anyPlaced ) {
+        saveNpcStructurePlacements( placementsPath,
+                                    &placedNames,
+                                    &placedPositions );
+        }
+
+    delete [] placementsPath;
+    freeStringVector( &scenePaths );
+    freeStringVector( &placedNames );
+    }
+
+
+static void spawnMonumentStructures() {
+    const char *monFolderName = "structures/momuments";
+
+    File *monFolder = new File( NULL, monFolderName );
+    if( !monFolder->exists() || !monFolder->isDirectory() ) {
+        delete monFolder;
+        monFolder = new File( NULL, "../OneLifeData7/structures/momuments" );
+        monFolderName = "../OneLifeData7/structures/momuments";
+        }
+
+    if( !monFolder->exists() || !monFolder->isDirectory() ) {
+        delete monFolder;
+        return;
+        }
+
+    delete monFolder;
+
+    char *settingsPath = autoSprintf( "%s/spawn_settings.txt", monFolderName );
+    FILE *f = fopen( settingsPath, "r" );
+    if( f == NULL ) {
+        delete [] settingsPath;
+        return;
+        }
+
+    char line[1024];
+
+    while( fgets( line, sizeof( line ), f ) != NULL ) {
+        if( line[0] == '#' || line[0] == '\n' || line[0] == '\r' ) {
+            continue;
+            }
+
+        char scenePath[512];
+        int x = 0;
+        int y = 0;
+
+        if( sscanf( line, "%511s %d %d", scenePath, &x, &y ) != 3 ) {
+            continue;
+            }
+
+        if( scenePath[0] == '\0' ) {
+            continue;
+            }
+
+        loadStructureFromFolder( monFolderName, scenePath, x, y );
+        }
+
+    fclose( f );
+    delete [] settingsPath;
     }
  
  

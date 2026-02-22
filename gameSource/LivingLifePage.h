@@ -26,6 +26,7 @@
 #include "emotion.h"
 
 #include "TextField.h"
+#include "TextButton.h"
 
 #include <string>
 
@@ -1012,6 +1013,9 @@ class LivingLifePage : public GamePage, public ActionListener {
         // not visible, but used for its text filtering
         // capabilities
         TextField mSayField;
+
+        TextField mVogTeleportField;
+        TextButton mVogTeleportButton;
         
         double mPageStartTime;
 
@@ -1155,6 +1159,8 @@ class LivingLifePage : public GamePage, public ActionListener {
 
         // where player is standing or held
         doublePair getPlayerPos( LiveObject *inPlayer );
+
+        void triggerVogTeleport( int inX, int inY );
 
 
 

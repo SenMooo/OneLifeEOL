@@ -134,6 +134,58 @@ static doublePair vogPos = { 0, 0 };
 
 static char vogPickerOn = false;
 
+static SimpleVector<GridPos> graveRequestPos;
+
+static char parseVogTeleportCoordPair( const char *inText, int *outX, int *outY ) {
+    if( inText == NULL || outX == NULL || outY == NULL ) {
+        return false;
+        }
+
+    int n = strlen( inText );
+
+    if( n < 4 ) {
+        return false;
+        }
+
+    if( inText[0] != '+' && inText[0] != '-' ) {
+        return false;
+        }
+
+    int secondSignI = -1;
+
+    for( int i=1; i<n; i++ ) {
+        if( inText[i] == '+' || inText[i] == '-' ) {
+            secondSignI = i;
+            break;
+            }
+        if( inText[i] < '0' || inText[i] > '9' ) {
+            return false;
+            }
+        }
+
+    if( secondSignI <= 1 || secondSignI >= n - 1 ) {
+        return false;
+        }
+
+    for( int i=secondSignI + 1; i<n; i++ ) {
+        if( inText[i] < '0' || inText[i] > '9' ) {
+            return false;
+            }
+        }
+
+    int x, y;
+
+    int numRead = sscanf( inText, "%d%d", &x, &y );
+
+    if( numRead != 2 ) {
+        return false;
+        }
+
+    *outX = x;
+    *outY = y;
+    return true;
+    }
+
 void LivingLifePage::vogMove( int x, int y ) {
     char *message = autoSprintf( "VOGM %d %d#", x, y );
     sendToServerSocket( message );
@@ -153,6 +205,56 @@ void LivingLifePage::vogMoveCamera( float newScreenViewCenterX, float newScreenV
         lastScreenViewCenter.x + 510,
         lastScreenViewCenter.y + 90
         );
+    }
+
+void LivingLifePage::triggerVogTeleport( int inX, int inY ) {
+    if( !vogMode ) {
+        return;
+        }
+
+    if( inX != lrint( vogPos.x ) || inY != lrint( vogPos.y ) ) {
+        vogMove( inX, inY );
+        }
+
+    vogPos.x = inX;
+    vogPos.y = inY;
+
+    LiveObject *ourLiveObject = getOurLiveObject();
+    if( ourLiveObject != NULL ) {
+        ourLiveObject->xd = inX;
+        ourLiveObject->yd = inY;
+        ourLiveObject->currentPos.x = inX;
+        ourLiveObject->currentPos.y = inY;
+        }
+
+    char *message = autoSprintf( "VOGX %d %d#", inX, inY );
+    sendToServerSocket( message );
+    delete [] message;
+
+    vogMode = false;
+    if( vogPickerOn ) {
+        removeComponent( &mObjectPicker );
+        mObjectPicker.removeActionListener( this );
+        }
+    vogPickerOn = false;
+    if( vogModeActuallyOn ) {
+        vogJumpCameraOnNextVU = true;
+        vogResumingUsualCameraMovementOnNextVU = true;
+        }
+    else {
+        vogStopUsualCameraMovement = false;
+        }
+    vogModeActuallyOn = false;
+    vogFollowMode = false;
+
+    mVogTeleportField.unfocus();
+
+    for( int i=0; i<mGraveInfo.size(); i++ ) {
+        delete [] mGraveInfo.getElement(i)->relationName;
+        }
+    mGraveInfo.deleteAll();
+
+    graveRequestPos.deleteAll();
     }
 
     
@@ -356,7 +458,6 @@ static SimpleVector<double> bytesInHistoryGraph;
 static SimpleVector<double> bytesOutHistoryGraph;
 
 
-static SimpleVector<GridPos> graveRequestPos;
 static SimpleVector<GridPos> ownerRequestPos;
 
 
@@ -4240,6 +4341,8 @@ LivingLifePage::LivingLifePage()
           mPathMarkSprite( loadWhiteSprite( "pathMark.tga" ) ),
           mSayField( handwritingFont, 0, 1000, 10, true, NULL,
                      "ABCDEFGHIJKLMNOPQRSTUVWXYZ.-,'?!/ 0123456789" ),
+          mVogTeleportField( mainFont, 0, 0, 12, false, "TP", "+-0123456789" ),
+          mVogTeleportButton( mainFont, 0, 0, "GO" ),
           mDeathReason( NULL ),
           mShowHighlights( true ),
           mUsingSteam( false ),
@@ -4321,6 +4424,17 @@ LivingLifePage::LivingLifePage()
     mSayField.setIgnoreArrowKeys( true );
     // drawn under world at (0,1000), don't allow click to focus
     mSayField.setIgnoreMouse( true );
+
+    mVogTeleportField.setWidth( 250 );
+    mVogTeleportField.setVisible( false );
+    mVogTeleportField.setActive( false );
+    addComponent( &mVogTeleportField );
+
+    mVogTeleportButton.setSize( 72, 36 );
+    mVogTeleportButton.setVisible( false );
+    mVogTeleportButton.setActive( false );
+    mVogTeleportButton.addActionListener( this );
+    addComponent( &mVogTeleportButton );
     
     // these are vog controls
     mObjectPicker.setIgnoredKey( 'V' );
@@ -11595,6 +11709,24 @@ void LivingLifePage::draw( doublePair inViewCenter,
     
     // always draw the say field text box outside the screen
     mSayField.setPosition( 0, visibleViewWidth + lastScreenViewCenter.y );
+
+    char showVogTeleportUI = vogMode;
+
+    mVogTeleportField.setVisible( showVogTeleportUI );
+    mVogTeleportField.setActive( showVogTeleportUI );
+    mVogTeleportButton.setVisible( showVogTeleportUI );
+    mVogTeleportButton.setActive( showVogTeleportUI );
+
+    if( showVogTeleportUI ) {
+        double fieldX = lastScreenViewCenter.x - visibleViewWidth / 2 + 240 * gui_fov_scale_hud;
+        double fieldY = lastScreenViewCenter.y + viewHeight / 2 - 60 * gui_fov_scale_hud;
+
+        mVogTeleportField.setPosition( fieldX, fieldY );
+        mVogTeleportButton.setPosition( fieldX + 190 * gui_fov_scale_hud, fieldY );
+        }
+    else {
+        mVogTeleportField.unfocus();
+        }
     
     doublePair paperPos = add( mult( recalcOffset( mNotePaperPosOffset ), gui_fov_scale ), lastScreenViewCenter );
 
@@ -28127,6 +28259,8 @@ void LivingLifePage::keyDown( unsigned char inASCII ) {
                         }
                     vogModeActuallyOn = false;
                     vogFollowMode = false;
+
+                    mVogTeleportField.unfocus();
                     }
                 }
             break;
@@ -28141,45 +28275,10 @@ void LivingLifePage::keyDown( unsigned char inASCII ) {
                         lrintf( lastScreenViewCenter.x / CELL_D ),
                         lrintf( lastScreenViewCenter.y / CELL_D )
                         };
-
-                    if( viewingGridPos.x != lrint( vogPos.x ) || 
-                        viewingGridPos.y != lrint( vogPos.y ) ) {
-                        vogMove( viewingGridPos.x, viewingGridPos.y );
-                        }
                     
                     // Send coords different than (0, 0) to teleport
                     // Coords relative to the vog birth pos
-                    char *message = autoSprintf( "VOGX %d %d#",
-                                                 viewingGridPos.x, 
-                                                 viewingGridPos.y );
-                    
-                    sendToServerSocket( message );
-                    
-                    delete [] message;
-                    
-                    vogMode = false;
-                    if( vogPickerOn ) {
-                        removeComponent( &mObjectPicker );
-                        mObjectPicker.removeActionListener( this );
-                        }
-                    vogPickerOn = false;
-                    if( vogModeActuallyOn ) {
-                        vogJumpCameraOnNextVU = true;
-                        vogResumingUsualCameraMovementOnNextVU = true;
-                        }
-                    else {
-                        vogStopUsualCameraMovement = false;
-                        }
-                    vogModeActuallyOn = false;
-                    vogFollowMode = false;
-                    
-                    // Grave info is no longer valid as we will teleport
-                    for( int i=0; i<mGraveInfo.size(); i++ ) {
-                        delete [] mGraveInfo.getElement(i)->relationName;
-                        }
-                    mGraveInfo.deleteAll();
-                    
-                    graveRequestPos.deleteAll();
+                    triggerVogTeleport( viewingGridPos.x, viewingGridPos.y );
                     }
                 }
             break;
@@ -29088,6 +29187,24 @@ void LivingLifePage::keyUp( unsigned char inASCII ) {
 
 
 void LivingLifePage::actionPerformed( GUIComponent *inTarget ) {
+    if( inTarget == &mVogTeleportButton ) {
+        if( ! ( vogMode && vogModeActuallyOn ) ) {
+            return;
+            }
+
+        char *typedText = mVogTeleportField.getText();
+
+        int targetX = 0;
+        int targetY = 0;
+
+        if( parseVogTeleportCoordPair( typedText, &targetX, &targetY ) ) {
+            triggerVogTeleport( targetX, targetY );
+            }
+
+        delete [] typedText;
+        return;
+        }
+
     // if( vogMode && inTarget == &mObjectPicker ) {
 
         // char rightClick;
