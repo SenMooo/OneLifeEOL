@@ -91,6 +91,8 @@ class ExistingAccountPage : public GamePage, public ActionListener {
         
         TextButton mBackToAccountTabButton;
         TextButton mLoginButton;
+        TextButton mCoreAreaButton;
+        TextButton mFrontierAreaButton;
         
         // Right Pane
         TextButton mSettingsButton;

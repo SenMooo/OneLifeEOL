@@ -62,7 +62,7 @@ extern char loginEditOverride;
 
 
 ExistingAccountPage::ExistingAccountPage()
-        : mBackground( "background.tga", 0.75f ),
+    : mBackground( "background.tga", 0.0f ),
           mGameLogo( "logo.tga", 1.0f, {-360, 256} ),
 
           // Left Pane Page 0
@@ -72,7 +72,7 @@ ExistingAccountPage::ExistingAccountPage()
                        // forbid only spaces and backslash and 
                        // single/double quotes 
                        // also pipe and colon, reserved as separators for spawn code and family name target
-                       "\"' \\|:#" ),
+                       "\"' \\|:#^" ),
           mEmailLockButton( mainFont, -108, 96, "!" ),
           mPasteEmailButton( mainFont, 0, 68, translate( "paste" ) ),
                        
@@ -111,6 +111,8 @@ ExistingAccountPage::ExistingAccountPage()
           
           mBackToAccountTabButton( mainFont, 0, 0, "BACK" ),
           mLoginButton( mainFont, 0, 0, "PLAY" ),
+          mCoreAreaButton( mainFont, 0, 0, "THE CORE" ),
+          mFrontierAreaButton( mainFont, 0, 0, "THE FRONTIER" ),
           
           // Right Pane
           mSettingsButton( mainFont, 360, -80, translate( "settingsButton" ) ),
@@ -179,10 +181,14 @@ ExistingAccountPage::ExistingAccountPage()
     mNextToGameTabButton.setSize( 360, 60 );
     mBackToAccountTabButton.setSize( 175, 60 );
     mLoginButton.setSize( 175, 60 );
+    mCoreAreaButton.setSize( 175, 60 );
+    mFrontierAreaButton.setSize( 175, 60 );
     
     mNextToGameTabButton.setPosition( mEmailField.getRightEdgeX() - ( mNextToGameTabButton.getWidth()/2 ), -272 );
     mBackToAccountTabButton.setPosition( mEmailField.getLeftEdgeX() + ( mBackToAccountTabButton.getWidth()/2 ), -272 );
     mLoginButton.setPosition( mEmailField.getRightEdgeX() - ( mLoginButton.getWidth()/2 ), -272 );
+    mCoreAreaButton.setPosition( mEmailField.getLeftEdgeX() + ( mCoreAreaButton.getWidth()/2 ), -80 );
+    mFrontierAreaButton.setPosition( mEmailField.getRightEdgeX() - ( mFrontierAreaButton.getWidth()/2 ), -80 );
     
     
     
@@ -238,6 +244,8 @@ ExistingAccountPage::ExistingAccountPage()
     setButtonStyle( &mSpawnSeedLockButton );
     setButtonStyle( &mBackToAccountTabButton );
     setButtonStyle( &mLoginButton );
+    setButtonStyle( &mCoreAreaButton );
+    setButtonStyle( &mFrontierAreaButton );
     
     setButtonStyle( &mSettingsButton );
     setButtonStyle( &mTutorialButton );
@@ -284,6 +292,8 @@ ExistingAccountPage::ExistingAccountPage()
     // Left Pane Page 1
     addComponent( &mLoginButton );
     addComponent( &mBackToAccountTabButton );
+    addComponent( &mFrontierAreaButton );
+    addComponent( &mCoreAreaButton );
     
     addComponent( mSeedOrFamilyButtonSet );
     addComponent( &mTargetFamily );    
@@ -359,6 +369,8 @@ ExistingAccountPage::ExistingAccountPage()
     mSeedOrFamilyButtonSet->addActionListener( this );
     mBackToAccountTabButton.addActionListener( this );
     mLoginButton.addActionListener( this );
+    mCoreAreaButton.addActionListener( this );
+    mFrontierAreaButton.addActionListener( this );
     
     mSettingsButton.addActionListener( this );
     mTutorialButton.addActionListener( this );
@@ -404,6 +416,8 @@ ExistingAccountPage::ExistingAccountPage()
     
     mBackToAccountTabButton.setCursorTip( "BACK TO ACCOUNT PAGE" );
     mLoginButton.setCursorTip( "BE BORN INTO THE WORLD" );
+    mCoreAreaButton.setCursorTip( "START YOUR OWN TOWN OR BE BORN TO A FAMILY IN THE CORE" );
+    mFrontierAreaButton.setCursorTip( "SURVIVAL IS IN QUESTION AND BIRTH IS RANDOM" );
     
     mSettingsButton.setCursorTip( "CHANGE GAME SETTINGS" );
     mTutorialButton.setCursorTip( "START THE TUTORIAL" );
@@ -525,6 +539,7 @@ int leftPanePage = 0;
 bool tutorialDone = true;
 bool useSteamUpdate = false;
 bool disableCredentialLocks = false;
+int spawnAreaSelection = 0;
 
 void ExistingAccountPage::updatefieldsAndLockButtons() {
     
@@ -608,25 +623,65 @@ void ExistingAccountPage::updateLeftPane() {
     mKeyField.setVisible( leftPanePage == 0 );
     
     mNextToGameTabButton.setVisible( leftPanePage == 0 && tutorialDone );
-    
-    mFriendsButton.setVisible( leftPanePage == 1 );
+
+    char onCorePage = leftPanePage == 1;
+    char onSelectorPage = leftPanePage == 2;
+    char onFrontierPage = leftPanePage == 3;
+
+    mFriendsButton.setVisible( onCorePage || onFrontierPage );
     mFriendsButton.setActive( !useTwinCode );
-    mSoloButton.setVisible( leftPanePage == 1 );
+    mSoloButton.setVisible( onCorePage || onFrontierPage );
     mSoloButton.setActive( useTwinCode );
     
-    mTwinCodeField.setVisible( leftPanePage == 1 && useTwinCode );
+    mTwinCodeField.setVisible( onCorePage && useTwinCode );
     
-    mSpecificButton.setVisible( leftPanePage == 1 && !useSteamUpdate );
-    mSpecificButton.setActive( !specifySpawn );
-    mRandomButton.setVisible( leftPanePage == 1 && !useSteamUpdate );
-    mRandomButton.setActive( specifySpawn );
+    mSpecificButton.setVisible( onCorePage && !useSteamUpdate );
+    mSpecificButton.setActive( onCorePage && !specifySpawn );
+    mRandomButton.setVisible( ( onCorePage && !useSteamUpdate ) || onFrontierPage );
+    if( onFrontierPage ) {
+        mRandomButton.setActive( false );
+        }
+    else {
+        mRandomButton.setActive( specifySpawn );
+        }
     
-    mSpawnSeed.setVisible( leftPanePage == 1 && specifySpawn == 2 && !useSteamUpdate );
-    mTargetFamily.setVisible( leftPanePage == 1 && specifySpawn == 1 && !useSteamUpdate );
-    mSeedOrFamilyButtonSet->setVisible( leftPanePage == 1 && specifySpawn != 0 && !useSteamUpdate );
+    mSpawnSeed.setVisible( onCorePage && specifySpawn == 2 && !useSteamUpdate );
+    mTargetFamily.setVisible( onCorePage && specifySpawn == 1 && !useSteamUpdate );
+    mSeedOrFamilyButtonSet->setVisible( onCorePage && specifySpawn != 0 && !useSteamUpdate );
     
-    mBackToAccountTabButton.setVisible( leftPanePage == 1 );
-    mLoginButton.setVisible( leftPanePage == 1 && tutorialDone );
+    mBackToAccountTabButton.setVisible( ( onCorePage || onSelectorPage || onFrontierPage ) );
+    mLoginButton.setVisible( ( onCorePage || onFrontierPage ) && tutorialDone );
+    mCoreAreaButton.setVisible( onSelectorPage && tutorialDone );
+    mFrontierAreaButton.setVisible( onSelectorPage && tutorialDone );
+
+    if( onCorePage || onFrontierPage ) {
+        mLoginButton.setLabelText( "PLAY" );
+        mLoginButton.setCursorTip( "BE BORN INTO THE WORLD" );
+        mBackToAccountTabButton.setCursorTip( "BACK TO AREA SELECTOR" );
+        }
+    else if( onSelectorPage ) {
+        mLoginButton.setLabelText( "PLAY" );
+        mLoginButton.setCursorTip( "BE BORN INTO THE WORLD" );
+        mBackToAccountTabButton.setCursorTip( "BACK TO LOGIN PAGE" );
+        mCoreAreaButton.setActive( true );
+        mFrontierAreaButton.setActive( true );
+        mCoreAreaButton.setCursorTip( "START YOUR OWN TOWN OR BE BORN TO A FAMILY IN THE CORE" );
+        mFrontierAreaButton.setCursorTip( "SURVIVAL IS IN QUESTION AND BIRTH IS RANDOM" );
+        }
+    else {
+        mLoginButton.setLabelText( "PLAY" );
+        mLoginButton.setCursorTip( "BE BORN INTO THE WORLD" );
+        mBackToAccountTabButton.setCursorTip( "BACK TO ACCOUNT PAGE" );
+        }
+
+    if( onFrontierPage ) {
+        doublePair randomPos = mRandomButton.getPosition();
+        randomPos.x = mSpecificButton.getPosition().x;
+        mRandomButton.setPosition( randomPos.x, randomPos.y );
+        }
+    else {
+        mRandomButton.setPosition( mEmailField.getRightEdgeX() - ( mRandomButton.getWidth()/2 ), -80 );
+        }
         
 }
 
@@ -649,7 +704,7 @@ void ExistingAccountPage::makeActive( char inFresh ) {
         }
     else {
         disableCredentialLocks = false;
-        leftPanePage = 1;
+        leftPanePage = 2;
         }
     
     delete [] emailText;
@@ -699,6 +754,8 @@ void ExistingAccountPage::makeActive( char inFresh ) {
         mSeedOrFamilyButtonSet->setVisible( false );
         mBackToAccountTabButton.setVisible( false );
         mLoginButton.setVisible( false );
+        mCoreAreaButton.setVisible( false );
+        mFrontierAreaButton.setVisible( false );
         
         mSettingsButton.setVisible( false );
         mTutorialButton.setVisible( false );
@@ -740,6 +797,10 @@ void ExistingAccountPage::makeActive( char inFresh ) {
         }
     
     specifySpawn = SettingsManager::getIntSetting( "specifySpawn", 0 );
+    spawnAreaSelection = SettingsManager::getIntSetting( "spawnAreaSelection", 0 );
+    if( spawnAreaSelection != 1 ) {
+        spawnAreaSelection = 0;
+        }
     if( specifySpawn == 1 ) {
         useTargetFamily = true;
         useSpawnSeed = false;
@@ -831,6 +892,8 @@ void ExistingAccountPage::makeActive( char inFresh ) {
         setDarkButtonStyle( &mSpawnSeedLockButton );
         setDarkButtonStyle( &mBackToAccountTabButton );
         setDarkButtonStyle( &mLoginButton );
+        setDarkButtonStyle( &mCoreAreaButton );
+        setDarkButtonStyle( &mFrontierAreaButton );
         
         setDarkButtonStyle( &mSettingsButton );
         setDarkButtonStyle( &mTutorialButton );
@@ -1004,8 +1067,26 @@ void ExistingAccountPage::actionPerformed( GUIComponent *inTarget ) {
 
             userTwinCount = mPlayerCountRadioButtonSet->getSelectedItem() + 2;
             }
-        
+
         processLogin( true, "done" );
+        }
+    else if( inTarget == &mCoreAreaButton ) {
+        spawnAreaSelection = 0;
+        SettingsManager::setSetting( "spawnAreaSelection", 0 );
+        leftPanePage = 1;
+        updateLeftPane();
+        }
+    else if( inTarget == &mFrontierAreaButton ) {
+        spawnAreaSelection = 1;
+        SettingsManager::setSetting( "spawnAreaSelection", 1 );
+
+        specifySpawn = 0;
+        SettingsManager::setSetting( "specifySpawn", 0 );
+        useTargetFamily = false;
+        useSpawnSeed = false;
+
+        leftPanePage = 3;
+        updateLeftPane();
         }
     else if( inTarget == &mSpecificButton ) {
         
@@ -1110,13 +1191,13 @@ void ExistingAccountPage::actionPerformed( GUIComponent *inTarget ) {
         useTwinCode = true;
         mFriendsButton.setActive( false );
         mSoloButton.setActive( true );
-        mTwinCodeField.setVisible( true );
+        updateLeftPane();
         }
     else if( inTarget == &mSoloButton ) {
         useTwinCode = false;
         mSoloButton.setActive( false );
         mFriendsButton.setActive( true );
-        mTwinCodeField.setVisible( false );
+        updateLeftPane();
         }
     else if( inTarget == &mTwinCodeField ) {
         char *text = mTwinCodeField.getText();
@@ -1330,7 +1411,7 @@ void ExistingAccountPage::actionPerformed( GUIComponent *inTarget ) {
         }
         
     else if( inTarget == &mNextToGameTabButton ) {        
-        leftPanePage = 1;
+        leftPanePage = 2;
         updateLeftPane();
         
         emailFieldLockedMode = 0;
@@ -1342,7 +1423,15 @@ void ExistingAccountPage::actionPerformed( GUIComponent *inTarget ) {
         updatefieldsAndLockButtons();
         }
     else if( inTarget == &mBackToAccountTabButton ) {
-        leftPanePage = 0;
+        if( leftPanePage == 1 || leftPanePage == 3 ) {
+            leftPanePage = 2;
+            }
+        else if( leftPanePage == 2 ) {
+            leftPanePage = 0;
+            }
+        else {
+            leftPanePage = 0;
+            }
         updateLeftPane();
         
         emailFieldLockedMode = 0;
@@ -1371,7 +1460,10 @@ void ExistingAccountPage::nextPage() {
     if( leftPanePage == 0 ) {
         actionPerformed( &mNextToGameTabButton );
         }
-    else if( leftPanePage == 1 ) {
+    else if( leftPanePage == 2 ) {
+        // no default page choice on ENTER
+        }
+    else if( leftPanePage == 1 || leftPanePage == 3 ) {
         actionPerformed( &mLoginButton );
         }
     }
@@ -1585,19 +1677,37 @@ void ExistingAccountPage::draw( doublePair inViewCenter,
         }
     
     if( leftPanePage == 1 ) {
-        if( !useSteamUpdate ) {
-            pos = mSpecificButton.getPosition();
-            pos.x = mEmailField.getLeftEdgeX() + mainFont->getFontHeight() * 0.25 * 0.5;
-            pos.y += 30 + 16;
-            setDrawColor( 1, 1, 1, 1.0 );
-            if( mSpecificButton.isVisible() ) mainFont->drawString( "WHERE TO SPAWN?", pos, alignLeft );
-            }
+        pos = mSpecificButton.getPosition();
+        pos.x = mEmailField.getLeftEdgeX() + mainFont->getFontHeight() * 0.25 * 0.5;
+        pos.y += 30 + 16 + 20;
+        setDrawColor( 1, 1, 1, 1.0 );
+        mainFont->drawString( "THE CORE", pos, alignLeft );
         
         pos = mFriendsButton.getPosition();
         pos.x = mEmailField.getLeftEdgeX() + mainFont->getFontHeight() * 0.25 * 0.5;
         pos.y += 30 + 16;
         setDrawColor( 1, 1, 1, 1.0 );
         if( mFriendsButton.isVisible() ) mainFont->drawString( "PLAY WITH FRIENDS?", pos, alignLeft );        
+        }
+    else if( leftPanePage == 2 ) {
+        pos = mCoreAreaButton.getPosition();
+        pos.x = mEmailField.getLeftEdgeX() + mainFont->getFontHeight() * 0.25 * 0.5;
+        pos.y += 30 + 16;
+        setDrawColor( 1, 1, 1, 1.0 );
+        mainFont->drawString( "CHOOSE AN AREA TO SPAWN IN", pos, alignLeft );
+        }
+    else if( leftPanePage == 3 ) {
+        pos = mRandomButton.getPosition();
+        pos.x = mEmailField.getLeftEdgeX() + mainFont->getFontHeight() * 0.25 * 0.5;
+        pos.y += 30 + 16 + 20;
+        setDrawColor( 1, 1, 1, 1.0 );
+        mainFont->drawString( "THE FRONTIER", pos, alignLeft );
+
+        pos = mFriendsButton.getPosition();
+        pos.x = mEmailField.getLeftEdgeX() + mainFont->getFontHeight() * 0.25 * 0.5;
+        pos.y += 30 + 16;
+        setDrawColor( 1, 1, 1, 1.0 );
+        if( mFriendsButton.isVisible() ) mainFont->drawString( "PLAY WITH FRIENDS?", pos, alignLeft );
         }
 
 

@@ -830,6 +830,7 @@ typedef struct FreshConnection {
         char *email;
         uint32_t hashedSpawnSeed;
         char useBedSpawn;
+        int spawnAreaSelection;
         char *famTarget = NULL;
         
         int tutorialNumber;
@@ -14628,6 +14629,7 @@ int main() {
                 newConnection.email = NULL;
                 newConnection.hashedSpawnSeed = 0;
                 newConnection.useBedSpawn = false;
+                newConnection.spawnAreaSelection = 0;
 
                 newConnection.sock = sock;
 
@@ -15207,6 +15209,28 @@ int main() {
                             if( hasEmailToken ) {
 
                                 std::string emailAndSeed { tokens->getElementDirect( 1 ) };
+
+                                const char areaDelim = '^';
+                                const size_t areaDelimPos = emailAndSeed.find( areaDelim );
+                                if( areaDelimPos != std::string::npos ) {
+                                    if( areaDelimPos + 1 < emailAndSeed.length() ) {
+                                        char areaChar = emailAndSeed[ areaDelimPos + 1 ];
+                                        if( areaChar == 'F' || areaChar == 'f' ) {
+                                            nextConnection->spawnAreaSelection = 1;
+                                            }
+                                        else {
+                                            nextConnection->spawnAreaSelection = 0;
+                                            }
+
+                                        emailAndSeed.erase( areaDelimPos, 2 );
+                                        }
+                                    else {
+                                        emailAndSeed.erase( areaDelimPos, 1 );
+                                        }
+                                    }
+                                else {
+                                    nextConnection->spawnAreaSelection = 0;
+                                    }
 
                                 const size_t seedDelimPos = emailAndSeed.find( seedDelim );
 

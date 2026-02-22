@@ -3415,6 +3415,37 @@ std::string getSeededEmail() {
                 }
             }
 
+        int spawnAreaSelection =
+            SettingsManager::getIntSetting( "spawnAreaSelection", 0 );
+        if( spawnAreaSelection != 1 ) {
+            spawnAreaSelection = 0;
+            }
+
+        if( seededEmail.find('^') == std::string::npos ) {
+            char areaCode = 'C';
+            if( spawnAreaSelection == 1 ) {
+                areaCode = 'F';
+                }
+
+            size_t delimPos = seededEmail.find('|');
+            size_t famPos = seededEmail.find(':');
+
+            if( famPos != std::string::npos &&
+                ( delimPos == std::string::npos || famPos < delimPos ) ) {
+                delimPos = famPos;
+                }
+
+            std::string marker = "^";
+            marker += areaCode;
+
+            if( delimPos == std::string::npos ) {
+                seededEmail += marker;
+                }
+            else {
+                seededEmail.insert( delimPos, marker );
+                }
+            }
+
         tempEmail = stringDuplicate( seededEmail.c_str() );
         }
     else {

@@ -22,7 +22,7 @@ extern char *accountKey;
 
 
 RebirthChoicePage::RebirthChoicePage()
-        : mBackground( "background.tga", 0.75f ),
+    : mBackground( "background.tga", 0.0f ),
         
           mQuitButton( mainFont, 0, -224, 
                        translate( "quit" ) ),

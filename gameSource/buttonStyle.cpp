@@ -89,22 +89,22 @@ void set2HOLOldButtonStyle( Button *inButton ) {
 void setButtonStyle( Button *inButton ) {
     
     // Text Color
-    inButton->setNoHoverColor( 0, 0, 0, 1 );
-    inButton->setHoverColor( 0, 0, 0, 1 );
-    inButton->setDragOverColor( 0, 0, 0, 1 );
-    inButton->setInactiveColor( 0, 0, 0, 1 );
+    inButton->setNoHoverColor( 1, 1, 1, 1 );
+    inButton->setHoverColor( 1, 1, 1, 1 );
+    inButton->setDragOverColor( 1, 1, 1, 1 );
+    inButton->setInactiveColor( 0.8, 0.8, 0.8, 1 );
 
     // Fill Color
-    inButton->setFillColor( 1, 0.75, 0.2, 1 );
-    inButton->setHoverFillColor( 1, 0.75, 0.2, 1 );
-    inButton->setDragOverFillColor( 0.8, 0.6, 0.15, 1 );
-    inButton->setInactiveFillColor( 1, 0.75, 0.2, 1 );
+    inButton->setFillColor( 0.30, 0.40, 0.55, 1 );
+    inButton->setHoverFillColor( 0.36, 0.47, 0.64, 1 );
+    inButton->setDragOverFillColor( 0.24, 0.33, 0.47, 1 );
+    inButton->setInactiveFillColor( 0.20, 0.27, 0.38, 1 );
     
     // Border Color
-    inButton->setBorderColor( 0.5, 0.5, 0.5, 1 );
-    inButton->setHoverBorderColor( 1, 1, 1, 1 );
-    inButton->setDragOverBorderColor( 1, 1, 1, 1 );
-    inButton->setInactiveBorderColor( 1, 1, 1, 1 );
+    inButton->setBorderColor( 0.55, 0.67, 0.82, 1 );
+    inButton->setHoverBorderColor( 0.76, 0.86, 0.97, 1 );
+    inButton->setDragOverBorderColor( 0.76, 0.86, 0.97, 1 );
+    inButton->setInactiveBorderColor( 0.40, 0.50, 0.63, 1 );
     
     inButton->setBracketCoverLength( 16 );
     doublePair shift = { 0, -2 };
