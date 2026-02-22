@@ -1353,6 +1353,8 @@ static int getBaseMapCallCount = 0;
 // NPC structure placement
 class File;
 static void spawnNpcStructures();
+static void spawnFrontierStructures();
+static void spawnMonumentStructures();
 static char loadStructureSceneFromFile( File *inFile,
                                         int inOffsetX, int inOffsetY );
  
@@ -4126,6 +4128,8 @@ char initMap() {
 
     // NPC structure placement (from structures-npc)
     spawnNpcStructures();
+    spawnFrontierStructures();
+    spawnMonumentStructures();
    
    
    
@@ -9917,6 +9921,82 @@ static char isVillageScenePath( const char *inPath, int *outIndex ) {
     }
 
 
+static void loadFrontierSpawnSettings( const char *inRulesFilePath,
+                                       int *outCenterSpacing,
+                                       int *outJitter,
+                                       int *outRingInnerHalfSize,
+                                       int *outRingOuterHalfSize,
+                                       int *outRingGateEnabled ) {
+    FILE *f = fopen( inRulesFilePath, "r" );
+    if( f == NULL ) {
+        return;
+        }
+
+    char line[512];
+
+    while( fgets( line, sizeof( line ), f ) != NULL ) {
+        if( line[0] == '#' || line[0] == '\n' || line[0] == '\r' ) {
+            continue;
+            }
+
+        char scope[64];
+        char key[64];
+        int value = 0;
+
+        if( sscanf( line, "%63s %63s %d", scope, key, &value ) != 3 ) {
+            continue;
+            }
+
+        if( strcmp( scope, "GLOBAL" ) != 0 ) {
+            continue;
+            }
+
+        if( strcmp( key, "frontierCenterSpacing" ) == 0 && value > 0 ) {
+            *outCenterSpacing = value;
+            }
+        else if( strcmp( key, "frontierJitter" ) == 0 && value >= 0 ) {
+            *outJitter = value;
+            }
+        else if( strcmp( key, "frontierRingInnerHalfSize" ) == 0 && value >= 0 ) {
+            *outRingInnerHalfSize = value;
+            }
+        else if( strcmp( key, "frontierRingOuterHalfSize" ) == 0 && value > 0 ) {
+            *outRingOuterHalfSize = value;
+            }
+        else if( strcmp( key, "frontierRingGateEnabled" ) == 0 ) {
+            *outRingGateEnabled = value != 0;
+            }
+        }
+
+    fclose( f );
+    }
+
+
+static char isFrontierScenePath( const char *inPath ) {
+    if( inPath == NULL ) {
+        return false;
+        }
+
+    const char *name = inPath;
+    const char *lastSlash = strrchr( inPath, '/' );
+    if( lastSlash != NULL ) {
+        name = lastSlash + 1;
+        }
+
+    if( strcmp( name, "placements.txt" ) == 0 ||
+        strcmp( name, "spawn_rules.txt" ) == 0 ) {
+        return false;
+        }
+
+    int len = strlen( name );
+    if( len < 4 || strcmp( &( name[ len - 4 ] ), ".txt" ) != 0 ) {
+        return false;
+        }
+
+    return true;
+    }
+
+
 static void spawnNpcStructures() {
     const char *npcFolderName = "structures/npc";
 
@@ -10138,6 +10218,232 @@ static void spawnNpcStructures() {
     freeStringVector( &npcFiles );
     freeStringVector( &villageScenePaths );
     freeStringVector( &placedNames );
+    }
+
+
+static void spawnFrontierStructures() {
+    const char *frontierFolderName = "structures/frontierSpawn";
+
+    int centerSpacing = 1000;
+    int jitter = 350;
+    int ringInnerHalfSize = 25000;
+    int ringOuterHalfSize = 35000;
+    int ringGateEnabled = 1;
+
+    File *frontierFolder = new File( NULL, frontierFolderName );
+    if( !frontierFolder->exists() || !frontierFolder->isDirectory() ) {
+        delete frontierFolder;
+        frontierFolder = new File( NULL, "../OneLifeData7/structures/frontierSpawn" );
+        frontierFolderName = "../OneLifeData7/structures/frontierSpawn";
+        }
+
+    if( !frontierFolder->exists() || !frontierFolder->isDirectory() ) {
+        delete frontierFolder;
+        return;
+        }
+
+    SimpleVector<char*> frontierFiles;
+    collectStructureFilesRecursive( frontierFolder, "", &frontierFiles );
+    delete frontierFolder;
+
+    if( frontierFiles.size() == 0 ) {
+        return;
+        }
+
+    char *spawnRulesPath = autoSprintf( "%s/spawn_rules.txt", frontierFolderName );
+    loadFrontierSpawnSettings( spawnRulesPath,
+                               &centerSpacing,
+                               &jitter,
+                               &ringInnerHalfSize,
+                               &ringOuterHalfSize,
+                               &ringGateEnabled );
+    delete [] spawnRulesPath;
+
+    if( centerSpacing < 1 ) {
+        centerSpacing = 1;
+        }
+
+    if( jitter < 0 ) {
+        jitter = 0;
+        }
+
+    if( ringOuterHalfSize < ringInnerHalfSize ) {
+        ringOuterHalfSize = ringInnerHalfSize;
+        }
+
+    int maxHalf = xLimit;
+    if( yLimit < maxHalf ) {
+        maxHalf = yLimit;
+        }
+    if( maxHalf > 2 ) {
+        maxHalf -= 2;
+        }
+
+    if( ringOuterHalfSize > maxHalf ) {
+        ringOuterHalfSize = maxHalf;
+        }
+
+    SimpleVector<char*> scenePaths;
+    for( int i=0; i<frontierFiles.size(); i++ ) {
+        char *path = frontierFiles.getElementDirect( i );
+        if( isFrontierScenePath( path ) ) {
+            scenePaths.push_back( stringDuplicate( path ) );
+            }
+        }
+
+    freeStringVector( &frontierFiles );
+
+    if( scenePaths.size() == 0 ) {
+        return;
+        }
+
+    SimpleVector<char*> placedNames;
+    SimpleVector<GridPos> placedPositions;
+    char *placementsPath = autoSprintf( "%s/placements.txt", frontierFolderName );
+    loadNpcStructurePlacements( placementsPath, &placedNames, &placedPositions );
+
+    char anyPlaced = false;
+
+    for( int i=0; i<placedNames.size() && i<placedPositions.size(); i++ ) {
+        GridPos p = placedPositions.getElementDirect( i );
+        char *path = placedNames.getElementDirect( i );
+        loadStructureFromFolder( frontierFolderName, path, p.x, p.y );
+        }
+
+    CustomRandomSource randSource(
+        (int)( biomeRandSeedA ^ biomeRandSeedB ^ 0x46524F4E ) );
+
+    SimpleVector<int> sceneBag;
+    for( int i=0; i<scenePaths.size(); i++ ) {
+        sceneBag.push_back( i );
+        }
+    int bagIndex = 0;
+
+    for( int x=-ringOuterHalfSize; x<=ringOuterHalfSize; x+=centerSpacing ) {
+        for( int y=-ringOuterHalfSize; y<=ringOuterHalfSize; y+=centerSpacing ) {
+            if( ringGateEnabled ) {
+                int ringR = abs( x );
+                if( abs( y ) > ringR ) {
+                    ringR = abs( y );
+                    }
+
+                if( ringR < ringInnerHalfSize || ringR > ringOuterHalfSize ) {
+                    continue;
+                    }
+                }
+
+            if( bagIndex >= sceneBag.size() ) {
+                for( int i=0; i<sceneBag.size(); i++ ) {
+                    int swapI = randSource.getRandomBoundedInt( i,
+                                                                sceneBag.size() - 1 );
+                    sceneBag.swap( i, swapI );
+                    }
+                bagIndex = 0;
+                }
+
+            int sceneI = sceneBag.getElementDirect( bagIndex );
+            bagIndex ++;
+            char *scenePath = scenePaths.getElementDirect( sceneI );
+
+            char alreadyPlaced = false;
+            int checkRadius = jitter + 120;
+
+            for( int pI=0; pI<placedPositions.size() && pI<placedNames.size(); pI++ ) {
+                GridPos p = placedPositions.getElementDirect( pI );
+                if( abs( p.x - x ) <= checkRadius && abs( p.y - y ) <= checkRadius ) {
+                    alreadyPlaced = true;
+                    break;
+                    }
+                }
+
+            if( alreadyPlaced ) {
+                continue;
+                }
+
+            char placed = false;
+            for( int attempt=0; attempt<40 && !placed; attempt++ ) {
+                int px = x + randSource.getRandomBoundedInt( -jitter, jitter );
+                int py = y + randSource.getRandomBoundedInt( -jitter, jitter );
+
+                if( px > maxHalf || px < -maxHalf || py > maxHalf || py < -maxHalf ) {
+                    continue;
+                    }
+
+                if( getMapObjectRaw( px, py ) != 0 ) {
+                    continue;
+                    }
+
+                if( loadStructureFromFolder( frontierFolderName, scenePath, px, py ) ) {
+                    GridPos p = { px, py };
+                    placedPositions.push_back( p );
+                    placedNames.push_back( stringDuplicate( scenePath ) );
+                    anyPlaced = true;
+                    placed = true;
+                    }
+                }
+            }
+        }
+
+    if( anyPlaced ) {
+        saveNpcStructurePlacements( placementsPath,
+                                    &placedNames,
+                                    &placedPositions );
+        }
+
+    delete [] placementsPath;
+    freeStringVector( &scenePaths );
+    freeStringVector( &placedNames );
+    }
+
+
+static void spawnMonumentStructures() {
+    const char *monFolderName = "structures/momuments";
+
+    File *monFolder = new File( NULL, monFolderName );
+    if( !monFolder->exists() || !monFolder->isDirectory() ) {
+        delete monFolder;
+        monFolder = new File( NULL, "../OneLifeData7/structures/momuments" );
+        monFolderName = "../OneLifeData7/structures/momuments";
+        }
+
+    if( !monFolder->exists() || !monFolder->isDirectory() ) {
+        delete monFolder;
+        return;
+        }
+
+    delete monFolder;
+
+    char *settingsPath = autoSprintf( "%s/spawn_settings.txt", monFolderName );
+    FILE *f = fopen( settingsPath, "r" );
+    if( f == NULL ) {
+        delete [] settingsPath;
+        return;
+        }
+
+    char line[1024];
+
+    while( fgets( line, sizeof( line ), f ) != NULL ) {
+        if( line[0] == '#' || line[0] == '\n' || line[0] == '\r' ) {
+            continue;
+            }
+
+        char scenePath[512];
+        int x = 0;
+        int y = 0;
+
+        if( sscanf( line, "%511s %d %d", scenePath, &x, &y ) != 3 ) {
+            continue;
+            }
+
+        if( scenePath[0] == '\0' ) {
+            continue;
+            }
+
+        loadStructureFromFolder( monFolderName, scenePath, x, y );
+        }
+
+    fclose( f );
+    delete [] settingsPath;
     }
  
  
