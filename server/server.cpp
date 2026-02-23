@@ -226,6 +226,7 @@ GridPos getPlayerPos( LiveObject *inPlayer );
 void sendGlobalMessage( char *inMessage,
                         LiveObject *inOnePlayerOnly );
 static void sendBedNotice( LiveObject *inPlayer, const char *inMessage );
+static char isInsideCoreBoundaryPos( GridPos inPos );
 
 
 typedef struct BedSpawnRecord {
@@ -416,6 +417,12 @@ static char getBedSpawnPosForEmail( const char *inEmail, GridPos *outPos ) {
         return false;
         }
 
+    if( ! isInsideCoreBoundaryPos( r->pos ) ) {
+        removeBedSpawnRecordIndex( i );
+        saveBedSpawnRecords();
+        return false;
+        }
+
     *outPos = r->pos;
     return true;
     }
@@ -432,6 +439,11 @@ static void registerBedSpawnForPlayer( LiveObject *inPlayer,
 
     if( ! isBedSpawnObject( getMapObject( pos.x, pos.y ) ) ) {
         sendBedNotice( inPlayer, "STAND ON A BED BEFORE CLAIMING IT." );
+        return;
+        }
+
+    if( ! isInsideCoreBoundaryPos( pos ) ) {
+        sendBedNotice( inPlayer, "BED CLAIMS ONLY INSIDE CORE." );
         return;
         }
 
