@@ -10358,10 +10358,13 @@ static char isContainmentWithMatchedTags( int inContainerID, int inContainedID )
                     // and contaienr to be +contHotPlates
                     
                     char end = locInContainerName[ tagLen ];
-                    
+
                     if( end == ' ' ||
-                        end == '\0'||
-                        end == '#' ) {
+                        end == '\0' ||
+                        end == '#' ||
+                        end == '\n' ||
+                        end == '\r' ||
+                        end == '\t' ) {
                         return true;
                         }
                     }
@@ -10460,19 +10463,27 @@ char containmentPermitted( int inContainerID, int inContainedID ) {
     if( containedObj->isUseDummy ) inContainedID = containedObj->useDummyParent;
     
     // avoid container-ception
-    if( inContainerID == inContainedID ) return false;    
+    if( inContainerID == inContainedID ) {
+        return false;
+    }
     
     // container does not have slots
-    if( getObject( inContainerID )->numSlots == 0 ) return false;
+    if( getObject( inContainerID )->numSlots == 0 ) {
+        return false;
+    }
     
     // matching tags for container and object, skip other checks
-    if( isContainmentWithMatchedTags( inContainerID, inContainedID ) ) return true;
+    if( isContainmentWithMatchedTags( inContainerID, inContainedID ) ) {
+        return true;
+    }
     
     // either or both container and object have parent categories which have matching tags, skip other checks
+    // Test ALL combinations, not mutually exclusive branches
     
     ReverseCategoryRecord *containedRecord = getReverseCategory( inContainedID );
     ReverseCategoryRecord *containerRecord = getReverseCategory( inContainerID );
     
+    // Both have categories: test all combinations
     if( containerRecord != NULL && containedRecord != NULL ) {
         for( int i=0; i< containerRecord->categoryIDSet.size(); i++ ) {
             int containerCID = containerRecord->categoryIDSet.getElementDirect( i );
@@ -10480,42 +10491,76 @@ char containmentPermitted( int inContainerID, int inContainedID ) {
             if( containerCategory == NULL ) continue;
             int containerPID = containerCategory->parentID;
             
+            // Test container parent vs contained parent
             for( int j=0; j< containedRecord->categoryIDSet.size(); j++ ) {
                 int containedCID = containedRecord->categoryIDSet.getElementDirect( j );
                 CategoryRecord *containedCategory = getCategory( containedCID );
                 if( containedCategory == NULL ) continue;
                 int containedPID = containedCategory->parentID;
-                
-                if( isContainmentWithMatchedTags( containerPID, containedPID ) ) return true;
+                if( isContainmentWithMatchedTags( containerPID, containedPID ) ) {
+                    return true;
+                }
+            }
+            
+            // Test container parent vs contained direct
+            if( isContainmentWithMatchedTags( containerPID, inContainedID ) ) {
+                return true;
             }
         }
-    } else if ( containerRecord != NULL ) {
-        for( int i=0; i< containerRecord->categoryIDSet.size(); i++ ) {
-            int containerCID = containerRecord->categoryIDSet.getElementDirect( i );
-            CategoryRecord *containerCategory = getCategory( containerCID );
-            if( containerCategory == NULL ) continue;
-            int containerPID = containerCategory->parentID;
-            if( isContainmentWithMatchedTags( containerPID, inContainedID ) ) return true;
-        }
-    } else if ( containedRecord != NULL ) {
+        
+        // Test container direct vs all contained parents
         for( int j=0; j< containedRecord->categoryIDSet.size(); j++ ) {
             int containedCID = containedRecord->categoryIDSet.getElementDirect( j );
             CategoryRecord *containedCategory = getCategory( containedCID );
             if( containedCategory == NULL ) continue;
             int containedPID = containedCategory->parentID;
-            if( isContainmentWithMatchedTags( inContainerID, containedPID ) ) return true;
+            if( isContainmentWithMatchedTags( inContainerID, containedPID ) ) {
+                return true;
+            }
+        }
+    }
+    
+    // Only container has categories: test container parent vs contained direct
+    if( containerRecord != NULL && containedRecord == NULL ) {
+        for( int i=0; i< containerRecord->categoryIDSet.size(); i++ ) {
+            int containerCID = containerRecord->categoryIDSet.getElementDirect( i );
+            CategoryRecord *containerCategory = getCategory( containerCID );
+            if( containerCategory == NULL ) continue;
+            int containerPID = containerCategory->parentID;
+            
+            if( isContainmentWithMatchedTags( containerPID, inContainedID ) ) {
+                return true;
+            }
+        }
+    }
+    
+    // Only contained has categories: test container direct vs contained parent
+    if( containedRecord != NULL && containerRecord == NULL ) {
+        for( int j=0; j< containedRecord->categoryIDSet.size(); j++ ) {
+            int containedCID = containedRecord->categoryIDSet.getElementDirect( j );
+            CategoryRecord *containedCategory = getCategory( containedCID );
+            if( containedCategory == NULL ) continue;
+            int containedPID = containedCategory->parentID;
+            
+            if( isContainmentWithMatchedTags( inContainerID, containedPID ) ) {
+                return true;
+            }
         }
     }
     
     // object not containable
-    if( !isContainable( inContainedID ) ) return false;
+    if( !isContainable( inContainedID ) ) {
+        return false;
+    }
     
     float slotSize = getObject( inContainerID )->slotSize;
     float objectSize = getObject( inContainedID )->containSize;
     
     // object is too big for the container
-    if( objectSize > slotSize ) return false;
-    
+    if( objectSize > slotSize ) {
+        return false;
+    }
+
     return true;
     }
 
