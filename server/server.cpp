@@ -220,6 +220,8 @@ static SimpleVector<char*> passwordProtectingPhrases;
 
 typedef struct LiveObject LiveObject;
 
+char doesEveLineExist( int inEveID );
+
 GridPos getPlayerPos( LiveObject *inPlayer );
 void sendGlobalMessage( char *inMessage,
                         LiveObject *inOnePlayerOnly );
@@ -596,6 +598,283 @@ static char *eveName = NULL;
 
 static char *infertilitySuffix = NULL;
 static char *fertilitySuffix = NULL;
+
+typedef struct FrontierSpawnNode {
+        GridPos pos;
+        int placeholderObjectID;
+        int activeLineageEveID;
+        timeSec_t cooldownEndTime;
+    } FrontierSpawnNode;
+
+typedef struct FrontierSpawnChoice {
+        char valid;
+        int nodeIndex;
+    int placeholderObjectID;
+        int lineageEveID;
+        char forceEve;
+        GridPos pos;
+    } FrontierSpawnChoice;
+
+static SimpleVector<FrontierSpawnNode> frontierSpawnNodes;
+static char frontierSpawnNodesLoaded = false;
+static int frontierCoreBoundary = 20000;
+
+static char isInsideCoreBoundaryPos( GridPos inPos ) {
+    return abs( inPos.x ) <= frontierCoreBoundary &&
+        abs( inPos.y ) <= frontierCoreBoundary;
+    }
+
+static int getFrontierPlaceholderIDForScenePath( const char *inScenePath ) {
+    int sceneIndex = -1;
+    sscanf( inScenePath, "Frontier_Spawn_%d.txt", &sceneIndex );
+
+    int placeholderID = 30000;
+    if( sceneIndex >= 0 && sceneIndex <= 1000 ) {
+        placeholderID = 30000 + sceneIndex;
+        }
+
+    return placeholderID;
+    }
+
+static char loadFrontierSpawnNodes() {
+    if( frontierSpawnNodesLoaded ) {
+        return frontierSpawnNodes.size() > 0;
+        }
+
+    SimpleVector<char*> placedSceneNames;
+    SimpleVector<GridPos> placedPositions;
+
+    getFrontierSpawnPlacements( &placedSceneNames, &placedPositions );
+
+    for( int i=0; i<placedSceneNames.size() && i<placedPositions.size(); i++ ) {
+        FrontierSpawnNode node;
+        node.pos = placedPositions.getElementDirect( i );
+        node.placeholderObjectID =
+            getFrontierPlaceholderIDForScenePath(
+                placedSceneNames.getElementDirect( i ) );
+        node.activeLineageEveID = 0;
+        node.cooldownEndTime = 0;
+
+        frontierSpawnNodes.push_back( node );
+        }
+
+    for( int i=0; i<placedSceneNames.size(); i++ ) {
+        delete [] placedSceneNames.getElementDirect( i );
+        }
+    placedSceneNames.deleteAll();
+
+    if( frontierSpawnNodes.size() > 0 ) {
+        frontierSpawnNodesLoaded = true;
+
+        AppLog::infoF( "Loaded %d frontier spawn nodes from map registry",
+                       frontierSpawnNodes.size() );
+
+        return true;
+        }
+
+    const char *pathA = "structures/frontierSpawn/placements.txt";
+    const char *pathB = "../OneLifeData7/structures/frontierSpawn/placements.txt";
+
+    FILE *f = fopen( pathA, "r" );
+
+    if( f == NULL ) {
+        f = fopen( pathB, "r" );
+        }
+
+    if( f == NULL ) {
+        frontierSpawnNodesLoaded = true;
+        return false;
+        }
+
+    char line[512];
+
+    while( fgets( line, sizeof( line ), f ) != NULL ) {
+        char scenePath[256];
+        int x = 0;
+        int y = 0;
+
+        if( sscanf( line, "%255s %d %d", scenePath, &x, &y ) != 3 ) {
+            continue;
+            }
+
+        FrontierSpawnNode node;
+        node.pos.x = x;
+        node.pos.y = y;
+        node.placeholderObjectID =
+            getFrontierPlaceholderIDForScenePath( scenePath );
+        node.activeLineageEveID = 0;
+        node.cooldownEndTime = 0;
+
+        frontierSpawnNodes.push_back( node );
+        }
+
+    fclose( f );
+
+    frontierSpawnNodesLoaded = true;
+
+    AppLog::infoF( "Loaded %d frontier spawn nodes",
+                   frontierSpawnNodes.size() );
+
+    return frontierSpawnNodes.size() > 0;
+    }
+
+static void refreshFrontierSpawnNodeState() {
+    if( ! loadFrontierSpawnNodes() ) {
+        return;
+        }
+
+    int cooldownSeconds =
+        SettingsManager::getIntSetting( "frontierNodeCooldownSeconds", 604800 );
+
+    if( cooldownSeconds < 0 ) {
+        cooldownSeconds = 0;
+        }
+
+    timeSec_t now = Time::timeSec();
+
+    for( int i=0; i<frontierSpawnNodes.size(); i++ ) {
+        FrontierSpawnNode *node = frontierSpawnNodes.getElement( i );
+
+        if( node->activeLineageEveID > 0 &&
+            ! doesEveLineExist( node->activeLineageEveID ) ) {
+
+            node->activeLineageEveID = 0;
+            node->cooldownEndTime = now + cooldownSeconds;
+            }
+        }
+    }
+
+static char pickFrontierSpawnChoice( FrontierSpawnChoice *outChoice ) {
+    outChoice->valid = false;
+    outChoice->nodeIndex = -1;
+    outChoice->placeholderObjectID = 0;
+    outChoice->lineageEveID = -1;
+    outChoice->forceEve = false;
+    outChoice->pos.x = 0;
+    outChoice->pos.y = 0;
+
+    if( ! loadFrontierSpawnNodes() ) {
+        return false;
+        }
+
+    refreshFrontierSpawnNodeState();
+
+    timeSec_t now = Time::timeSec();
+
+    SimpleVector<int> activeNodeIndices;
+    SimpleVector<int> readyNodeIndices;
+    SimpleVector<int> allTypeIDs;
+    SimpleVector<int> activeTypeIDs;
+
+    for( int i=0; i<frontierSpawnNodes.size(); i++ ) {
+        FrontierSpawnNode *node = frontierSpawnNodes.getElement( i );
+
+        int typeID = node->placeholderObjectID;
+        if( allTypeIDs.getElementIndex( typeID ) == -1 ) {
+            allTypeIDs.push_back( typeID );
+            }
+
+        if( node->activeLineageEveID > 0 ) {
+            activeNodeIndices.push_back( i );
+
+            if( activeTypeIDs.getElementIndex( typeID ) == -1 ) {
+                activeTypeIDs.push_back( typeID );
+                }
+            }
+        else if( node->cooldownEndTime <= now ) {
+            readyNodeIndices.push_back( i );
+            }
+        }
+
+    int chosenNodeIndex = -1;
+    char forceEve = false;
+
+    // First priority: ensure each resource/node type has at least one
+    // active frontier family.
+    SimpleVector<int> missingTypeIDs;
+    for( int i=0; i<allTypeIDs.size(); i++ ) {
+        int typeID = allTypeIDs.getElementDirect( i );
+        if( activeTypeIDs.getElementIndex( typeID ) == -1 ) {
+            missingTypeIDs.push_back( typeID );
+            }
+        }
+
+    if( missingTypeIDs.size() > 0 ) {
+        SimpleVector<int> readyMissingTypeNodes;
+
+        for( int i=0; i<readyNodeIndices.size(); i++ ) {
+            int nodeIndex = readyNodeIndices.getElementDirect( i );
+            FrontierSpawnNode *node = frontierSpawnNodes.getElement( nodeIndex );
+
+            if( missingTypeIDs.getElementIndex( node->placeholderObjectID ) != -1 ) {
+                readyMissingTypeNodes.push_back( nodeIndex );
+                }
+            }
+
+        if( readyMissingTypeNodes.size() > 0 ) {
+            int pick = randSource.getRandomBoundedInt( 0,
+                                                       readyMissingTypeNodes.size() - 1 );
+            chosenNodeIndex = readyMissingTypeNodes.getElementDirect( pick );
+            forceEve = true;
+            }
+        else if( activeNodeIndices.size() > 0 ) {
+            // Missing type exists but no ready node for it currently.
+            // Keep births in already-active families until a replacement type node is ready.
+            int pick = randSource.getRandomBoundedInt( 0,
+                                                       activeNodeIndices.size() - 1 );
+            chosenNodeIndex = activeNodeIndices.getElementDirect( pick );
+            forceEve = false;
+            }
+        }
+    else if( activeNodeIndices.size() > 0 ) {
+        // All resource types are represented: babies only.
+        int pick = randSource.getRandomBoundedInt( 0,
+                                                   activeNodeIndices.size() - 1 );
+        chosenNodeIndex = activeNodeIndices.getElementDirect( pick );
+        forceEve = false;
+        }
+    else {
+        // No active families at all. Start a new line at the soonest-available node.
+        timeSec_t bestCooldown = 0;
+
+        for( int i=0; i<frontierSpawnNodes.size(); i++ ) {
+            FrontierSpawnNode *node = frontierSpawnNodes.getElement( i );
+
+            if( chosenNodeIndex == -1 || node->cooldownEndTime < bestCooldown ) {
+                chosenNodeIndex = i;
+                bestCooldown = node->cooldownEndTime;
+                }
+            }
+
+        forceEve = true;
+        }
+
+    if( chosenNodeIndex < 0 ) {
+        return false;
+        }
+
+    FrontierSpawnNode *node = frontierSpawnNodes.getElement( chosenNodeIndex );
+
+    outChoice->valid = true;
+    outChoice->nodeIndex = chosenNodeIndex;
+    outChoice->placeholderObjectID = node->placeholderObjectID;
+    outChoice->lineageEveID = node->activeLineageEveID;
+    outChoice->forceEve = forceEve;
+    outChoice->pos = node->pos;
+
+    return true;
+    }
+
+static void assignLineageToFrontierNode( int inNodeIndex, int inLineageEveID ) {
+    if( inNodeIndex < 0 || inNodeIndex >= frontierSpawnNodes.size() ) {
+        return;
+        }
+
+    FrontierSpawnNode *node = frontierSpawnNodes.getElement( inNodeIndex );
+
+    node->activeLineageEveID = inLineageEveID;
+    node->cooldownEndTime = 0;
+    }
 
 // maps extended ascii codes to true/false for characters allowed in SAY
 // messages
@@ -1229,6 +1508,8 @@ typedef struct LiveObject {
         timeSec_t birthCoolDown;
         
         bool declaredInfertile;
+
+        bool bornInCoreArea;
 
         timeSec_t lastRegionLookTime;
         
@@ -2015,6 +2296,22 @@ static int getLiveObjectIndex( int inID ) {
         }
 
     return -1;
+    }
+
+
+static void setInfertileDisplayName( LiveObject *inPlayer ) {
+    if( inPlayer->displayedName != NULL ) {
+        delete [] inPlayer->displayedName;
+        inPlayer->displayedName = NULL;
+        }
+
+    if( inPlayer->name == NULL ) {
+        inPlayer->displayedName = stringDuplicate( infertilitySuffix );
+        }
+    else {
+        inPlayer->displayedName =
+            autoSprintf( "%s %s", inPlayer->name, infertilitySuffix );
+        }
     }
 
 
@@ -3462,6 +3759,29 @@ static int countYoungFemalesInLineage( int inLineageEveID ) {
             }
             
         }
+    return count;
+    }
+
+
+static int countLivingFrontierPlayersInLineage( int inLineageEveID ) {
+    int count = 0;
+
+    for( int i=0; i<players.size(); i++ ) {
+        LiveObject *o = players.getElement( i );
+
+        if( o->error || o->isTutorial ) {
+            continue;
+            }
+
+        if( o->bornInCoreArea ) {
+            continue;
+            }
+
+        if( o->lineageEveID == inLineageEveID ) {
+            count ++;
+            }
+        }
+
     return count;
     }
 
@@ -7796,6 +8116,12 @@ int processLoggedInPlayer( char inAllowReconnect,
     
     int barrierRadius = SettingsManager::getIntSetting( "barrierRadius", 250 );
     int barrierOn = SettingsManager::getIntSetting( "barrierOn", 1 );
+
+    frontierCoreBoundary =
+        SettingsManager::getIntSetting( "frontierCoreBoundary", 20000 );
+    if( frontierCoreBoundary < 1 ) {
+        frontierCoreBoundary = 20000;
+        }
     
 
     // reload these settings every time someone new connects
@@ -7950,11 +8276,56 @@ int processLoggedInPlayer( char inAllowReconnect,
 
     int numPlayers = players.size();
 
+    char frontierSpawnMode =
+        ! newObject.isTutorial && connection->spawnAreaSelection == 1;
+
+    FrontierSpawnChoice frontierSpawnChoice;
+    frontierSpawnChoice.valid = false;
+    frontierSpawnChoice.nodeIndex = -1;
+    frontierSpawnChoice.placeholderObjectID = 0;
+    frontierSpawnChoice.lineageEveID = -1;
+    frontierSpawnChoice.forceEve = false;
+    frontierSpawnChoice.pos.x = 0;
+    frontierSpawnChoice.pos.y = 0;
+
+    if( frontierSpawnMode ) {
+        if( ! pickFrontierSpawnChoice( &frontierSpawnChoice ) ) {
+            AppLog::info( "Frontier spawn selected, but no frontier nodes are available. Rejecting login to keep spawn systems separated." );
+            return -3;
+            }
+
+        AppLog::infoF(
+            "SPAWN_PICK mode=FRONTIER email=%s nodeIndex=%d type=%d nodePos=(%d,%d) activeLineage=%d forceEve=%d",
+            newObject.email,
+            frontierSpawnChoice.nodeIndex,
+            frontierSpawnChoice.placeholderObjectID,
+            frontierSpawnChoice.pos.x,
+            frontierSpawnChoice.pos.y,
+            frontierSpawnChoice.lineageEveID,
+            (int)frontierSpawnChoice.forceEve );
+        }
+
+    int forcedFrontierLineageEveID = -1;
+
+    if( frontierSpawnMode && frontierSpawnChoice.valid &&
+        ! frontierSpawnChoice.forceEve &&
+        frontierSpawnChoice.lineageEveID > 0 ) {
+
+        forcedFrontierLineageEveID = frontierSpawnChoice.lineageEveID;
+        }
+
+    if( frontierSpawnMode ) {
+        // Frontier babies should be able to go to any active frontier family.
+        // Locking to one lineage can cause false Eve spawns after /DIE.
+        forcedFrontierLineageEveID = -1;
+        }
+
     SimpleVector<LiveObject*> parentChoices;
     
     int numBirthLocationsCurseBlocked = 0;
 
     int numOfAge = 0;
+    int numFertileOnCooldown = 0;
     
 
     // first, find all mothers that could possibly have us
@@ -7987,7 +8358,7 @@ int processLoggedInPlayer( char inAllowReconnect,
                 }
                 
             //we specified a family we wanna be born into, skip others
-            if( connection->famTarget != NULL ) {
+            if( ! frontierSpawnMode && connection->famTarget != NULL ) {
                 if( player->familyName != NULL ) {
                     std::string famTarget( connection->famTarget );
                     std::string familyName( player->familyName );
@@ -7997,12 +8368,12 @@ int processLoggedInPlayer( char inAllowReconnect,
                     continue;
                     }
                 }
-            
 
             //GridPos motherPos = getPlayerPos( player );
                 
             
-            if( player->lastSidsBabyEmail != NULL &&
+            if( ! frontierSpawnMode &&
+                player->lastSidsBabyEmail != NULL &&
                 strcmp( player->lastSidsBabyEmail,
                         newObject.email ) == 0 ) {
                 // this baby JUST committed SIDS for this mother
@@ -8012,14 +8383,28 @@ int processLoggedInPlayer( char inAllowReconnect,
                 }
 
             if( isFertileAge( player ) ) {
+                GridPos motherPos = getPlayerPos( player );
+
+                if( frontierSpawnMode ) {
+                    if( forcedFrontierLineageEveID > 0 &&
+                        player->lineageEveID != forcedFrontierLineageEveID ) {
+                        continue;
+                        }
+                    }
+                else {
+                    if( ! player->bornInCoreArea ||
+                        ! isInsideCoreBoundaryPos( motherPos ) ) {
+                        continue;
+                        }
+                    }
+
                 numOfAge ++;
-                
+
                 if( checkCooldown &&
-                    Time::timeSec() < player->birthCoolDown ) {    
+                    Time::timeSec() < player->birthCoolDown ) {
+                    numFertileOnCooldown++;
                     continue;
                     }
-                
-                GridPos motherPos = getPlayerPos( player );
 
                 if( usePersonalCurses &&
                     isBirthLocationCurseBlocked( newObject.email, 
@@ -8068,6 +8453,14 @@ int processLoggedInPlayer( char inAllowReconnect,
         
 
         if( p == 0 ) {
+            if( frontierSpawnMode ) {
+                // Frontier should not bypass mother cooldowns by default.
+                if( ! SettingsManager::getIntSetting(
+                        "frontierIgnoreCooldownWhenNoMothers", 0 ) ) {
+                    break;
+                    }
+                }
+
             if( parentChoices.size() > 0 || numOfAge == 0 ) {
                 // found some mothers off-cool-down, 
                 // or there are none at all
@@ -8086,6 +8479,7 @@ int processLoggedInPlayer( char inAllowReconnect,
             checkCooldown = false;
             numBirthLocationsCurseBlocked = 0;
             numOfAge = 0;
+            numFertileOnCooldown = 0;
             }
         
         }
@@ -8112,7 +8506,9 @@ int processLoggedInPlayer( char inAllowReconnect,
         parentChoices.deleteAll();
         }
 
-    if( inForceParentID == -2 ) {
+    if( inForceParentID == -2 ||
+        ( frontierSpawnMode && frontierSpawnChoice.valid &&
+          frontierSpawnChoice.forceEve ) ) {
         // force eve
         parentChoices.deleteAll();
         }
@@ -8129,9 +8525,41 @@ int processLoggedInPlayer( char inAllowReconnect,
     
     
     if( !newObject.isTutorial )
-    if( connection->famTarget != NULL && parentChoices.size() == 0 ) {
+    if( ! frontierSpawnMode &&
+        connection->famTarget != NULL && parentChoices.size() == 0 ) {
         // -2 means failure to be born due to famTarget restriction
         return -2;
+        }
+
+    if( !newObject.isTutorial &&
+        frontierSpawnMode &&
+        frontierSpawnChoice.valid &&
+        ! frontierSpawnChoice.forceEve &&
+        parentChoices.size() == 0 ) {
+
+        connection->errorCauseString =
+            "Frontier birth unavailable (mothers on cooldown or not fertile), try again later";
+
+        // We are already in post-ACCEPTED login flow.
+        // Send explicit reject packet now so client can transition back to login.
+        const char *rejectMessage = "REJECTED\n#";
+        if( inSock != NULL ) {
+            inSock->send( (unsigned char*)rejectMessage,
+                          strlen( rejectMessage ),
+                          false, false );
+            }
+        connection->rejectedSendTime = Time::getCurrentTime();
+
+        AppLog::infoF(
+            "SPAWN_REJECT mode=FRONTIER email=%s reason=no_available_mother fertileCount=%d cooldownCount=%d curseBlockedCount=%d availableCount=%d nodeType=%d",
+            newObject.email,
+            numOfAge,
+            numFertileOnCooldown,
+            numBirthLocationsCurseBlocked,
+            parentChoices.size(),
+            frontierSpawnChoice.placeholderObjectID );
+
+        return -3;
         }
     
     char forceSpawn = false;
@@ -8148,11 +8576,13 @@ int processLoggedInPlayer( char inAllowReconnect,
             }
         }
         
-    if( connection->hashedSpawnSeed != 0 && SettingsManager::getIntSetting( "forceEveOnSeededSpawn", 0 ) ) {
+    if( ! frontierSpawnMode &&
+        connection->hashedSpawnSeed != 0 &&
+        SettingsManager::getIntSetting( "forceEveOnSeededSpawn", 0 ) ) {
         parentChoices.deleteAll();
         }
 
-    if( connection->useBedSpawn ) {
+    if( ! frontierSpawnMode && connection->useBedSpawn ) {
         parentChoices.deleteAll();
         }
 
@@ -8296,7 +8726,7 @@ int processLoggedInPlayer( char inAllowReconnect,
             for( int i=0; i<parentChoices.size(); i++ ) {
                 LiveObject *p = parentChoices.getElementDirect( i );
                 
-                if( ! isSkipped( inEmail, p->lineageEveID ) ) {
+                if( frontierSpawnMode || ! isSkipped( inEmail, p->lineageEveID ) ) {
                     filteredParentChoices.push_back( p );
                     }
                 }
@@ -8308,6 +8738,55 @@ int processLoggedInPlayer( char inAllowReconnect,
                 clearSkipList( inEmail );
                 
                 filteredParentChoices.push_back_other( &parentChoices );
+                }
+
+            if( frontierSpawnMode && filteredParentChoices.size() > 0 ) {
+                int minLineagePopulation = 0;
+                SimpleVector<int> leastPopulatedLineages;
+
+                for( int i=0; i<filteredParentChoices.size(); i++ ) {
+                    LiveObject *candidate =
+                        filteredParentChoices.getElementDirect( i );
+
+                    int lineage = candidate->lineageEveID;
+
+                    if( leastPopulatedLineages.getElementIndex( lineage ) != -1 ) {
+                        continue;
+                        }
+
+                    int population =
+                        countLivingFrontierPlayersInLineage( lineage );
+
+                    if( leastPopulatedLineages.size() == 0 ||
+                        population < minLineagePopulation ) {
+
+                        leastPopulatedLineages.deleteAll();
+                        leastPopulatedLineages.push_back( lineage );
+                        minLineagePopulation = population;
+                        }
+                    else if( population == minLineagePopulation ) {
+                        leastPopulatedLineages.push_back( lineage );
+                        }
+                    }
+
+                SimpleVector<LiveObject *> balancedChoices;
+
+                for( int i=0; i<filteredParentChoices.size(); i++ ) {
+                    LiveObject *candidate =
+                        filteredParentChoices.getElementDirect( i );
+
+                    if( leastPopulatedLineages.getElementIndex(
+                            candidate->lineageEveID ) != -1 ) {
+                        balancedChoices.push_back( candidate );
+                        }
+                    }
+
+                if( balancedChoices.size() > 0 ) {
+                    int parentIndex =
+                        randSource.getRandomBoundedInt( 0,
+                                                        balancedChoices.size() - 1 );
+                    parent = balancedChoices.getElementDirect( parentIndex );
+                    }
                 }
             
 
@@ -8363,22 +8842,24 @@ int processLoggedInPlayer( char inAllowReconnect,
                 totalWeight += thisMotherWeight;
                 }
 
-            double choice = 
-                randSource.getRandomBoundedDouble( 0, totalWeight );
-            
-            
-            totalWeight = 0;
-            
-            for( int i=0; i<filteredParentChoices.size(); i++ ) {
-                LiveObject *p = filteredParentChoices.getElementDirect( i );
-                
-                totalWeight += 
-                    filteredParentChoiceWeights.getElementDirect( i );
+            if( parent == NULL ) {
+                double choice = 
+                    randSource.getRandomBoundedDouble( 0, totalWeight );
 
-                if( totalWeight >= choice ) {
-                    parent = p;
-                    break;
-                    }                
+
+                totalWeight = 0;
+
+                for( int i=0; i<filteredParentChoices.size(); i++ ) {
+                    LiveObject *p = filteredParentChoices.getElementDirect( i );
+
+                    totalWeight += 
+                        filteredParentChoiceWeights.getElementDirect( i );
+
+                    if( totalWeight >= choice ) {
+                        parent = p;
+                        break;
+                        }
+                    }
                 }
             }
         
@@ -8618,12 +9099,20 @@ int processLoggedInPlayer( char inAllowReconnect,
             }
         
 
-        int startX, startY;
-        getEvePosition( newObject.email, 
-                        newObject.id, &startX, &startY, 
-                        &otherPeoplePos, allowEveRespawn );
+        int startX = 0;
+        int startY = 0;
 
-        if( newObject.curseStatus.curseLevel > 0 ) {
+        if( frontierSpawnMode && frontierSpawnChoice.valid ) {
+            startX = frontierSpawnChoice.pos.x;
+            startY = frontierSpawnChoice.pos.y;
+            }
+        else {
+            getEvePosition( newObject.email,
+                            newObject.id, &startX, &startY,
+                            &otherPeoplePos, allowEveRespawn );
+            }
+
+        if( ! frontierSpawnMode && newObject.curseStatus.curseLevel > 0 ) {
             // keep cursed players away by sticking them in Donkeytown 
 
             // 20K away in X and 20K away in Y, pushing out away from 0
@@ -8641,7 +9130,9 @@ int processLoggedInPlayer( char inAllowReconnect,
             }
         
 
-        if( SettingsManager::getIntSetting( "forceEveLocation", 0 ) && inCurseStatus.curseLevel == 0 ) {
+        if( ! frontierSpawnMode &&
+            SettingsManager::getIntSetting( "forceEveLocation", 0 ) &&
+            inCurseStatus.curseLevel == 0 ) {
 
             startX = 
                 SettingsManager::getIntSetting( "forceEveLocationX", 0 );
@@ -8689,7 +9180,7 @@ int processLoggedInPlayer( char inAllowReconnect,
             tempHashedSpawnSeed = connection->hashedSpawnSeed;
         }
 
-        if( tempHashedSpawnSeed != 0 ) {
+        if( ! frontierSpawnMode && tempHashedSpawnSeed != 0 ) {
             // Get bounding box from setting, default to 10k
             int seedSpawnBoundingBox =
                 SettingsManager::getIntSetting( "seedSpawnBoundingBox", 10000 );
@@ -8706,7 +9197,7 @@ int processLoggedInPlayer( char inAllowReconnect,
                     newObject.email, startX, startY );
             }
 
-        if( connection->useBedSpawn ) {
+        if( ! frontierSpawnMode && connection->useBedSpawn ) {
             if( hasBedSpawnPos ) {
                 startX = bedSpawnPos.x;
                 startY = bedSpawnPos.y;
@@ -8785,6 +9276,28 @@ int processLoggedInPlayer( char inAllowReconnect,
                 Time::getCurrentTime() - forceAge * ( 1.0 / getAgeRate() );
             }
         }
+
+    int spawnResultLineage = newObject.lineageEveID;
+    int spawnResultParentID = -1;
+
+    if( parent != NULL ) {
+        spawnResultParentID = parent->id;
+        spawnResultLineage = parent->lineageEveID;
+        }
+
+    AppLog::infoF(
+        "SPAWN_RESULT mode=%s kind=%s email=%s parentID=%d lineage=%d pos=(%d,%d) nodeIndex=%d nodeType=%d nodePos=(%d,%d)",
+        frontierSpawnMode ? "FRONTIER" : "CORE",
+        ( parent == NULL ) ? "EVE" : "BABY",
+        newObject.email,
+        spawnResultParentID,
+        spawnResultLineage,
+        newObject.xd,
+        newObject.yd,
+        frontierSpawnMode ? frontierSpawnChoice.nodeIndex : -1,
+        frontierSpawnMode ? frontierSpawnChoice.placeholderObjectID : -1,
+        frontierSpawnMode ? frontierSpawnChoice.pos.x : 0,
+        frontierSpawnMode ? frontierSpawnChoice.pos.y : 0 );
     
 
     newObject.holdingID = 0;
@@ -8937,6 +9450,7 @@ int processLoggedInPlayer( char inAllowReconnect,
     
     newObject.birthCoolDown = 0;
     newObject.declaredInfertile = false;
+    newObject.bornInCoreArea = true;
     
     newObject.monumentPosSet = false;
     newObject.monumentPosSent = true;
@@ -8971,6 +9485,7 @@ int processLoggedInPlayer( char inAllowReconnect,
             }
 
         newObject.lineageEveID = parent->lineageEveID;
+        newObject.bornInCoreArea = parent->bornInCoreArea;
 
         newObject.parentChainLength = parent->parentChainLength + 1;
 
@@ -9106,8 +9621,27 @@ int processLoggedInPlayer( char inAllowReconnect,
 
     newObject.birthPos.x = newObject.xd;
     newObject.birthPos.y = newObject.yd;
+
+    if( parent == NULL ) {
+        if( frontierSpawnMode && frontierSpawnChoice.valid ) {
+            newObject.bornInCoreArea = false;
+            }
+        else {
+            newObject.bornInCoreArea =
+                isInsideCoreBoundaryPos( newObject.birthPos );
+            }
+        }
     
     newObject.originalBirthPos = newObject.birthPos;
+
+    if( newObject.isEve &&
+        frontierSpawnMode &&
+        frontierSpawnChoice.valid &&
+        frontierSpawnChoice.nodeIndex >= 0 ) {
+
+        assignLineageToFrontierNode( frontierSpawnChoice.nodeIndex,
+                                     newObject.lineageEveID );
+        }
     
 
     newObject.heldOriginX = newObject.xd;
@@ -9441,8 +9975,16 @@ static void processWaitingTwinConnection( FreshConnection inConnection ) {
                             twinConnections.getElementDirect( j );
 
                         nextConnectionToReject->error = true;
-                        nextConnectionToReject->errorCauseString =
-                            "Login rejected";
+                        if( strcmp( nextConnectionToReject->errorCauseString,
+                                    "" ) == 0 ) {
+                            nextConnectionToReject->errorCauseString =
+                                "Login rejected";
+                            }
+
+                        if( strstr( nextConnectionToReject->errorCauseString,
+                                    "Frontier birth unavailable" ) != NULL ) {
+                            nextConnectionToReject->rejectedSendTime = 1;
+                            }
 
                         if( nextConnectionToReject->twinCode != NULL ) {
                             delete [] nextConnectionToReject->twinCode;
@@ -14988,8 +15530,16 @@ int main() {
                             }
                         else if( newID == -3 ) {
                             nextConnection->error = true;
-                            nextConnection->errorCauseString =
-                                "Login rejected";
+                            if( strcmp( nextConnection->errorCauseString,
+                                        "" ) == 0 ) {
+                                nextConnection->errorCauseString =
+                                    "Login rejected";
+                                }
+
+                            if( strstr( nextConnection->errorCauseString,
+                                        "Frontier birth unavailable" ) != NULL ) {
+                                nextConnection->rejectedSendTime = 1;
+                                }
                             }
                         }
                                                         
@@ -15536,8 +16086,16 @@ int main() {
                                             }
                                         else if( newID == -3 ) {
                                             nextConnection->error = true;
-                                            nextConnection->errorCauseString =
-                                                "Login rejected";
+                                            if( strcmp( nextConnection->errorCauseString,
+                                                        "" ) == 0 ) {
+                                                nextConnection->errorCauseString =
+                                                    "Login rejected";
+                                                }
+
+                                            if( strstr( nextConnection->errorCauseString,
+                                                        "Frontier birth unavailable" ) != NULL ) {
+                                                nextConnection->rejectedSendTime = 1;
+                                                }
                                             }
                                         }
                                                                         
@@ -15870,6 +16428,18 @@ int main() {
                     nextPlayer->yd != nextPlayer->ys ) {
                 
                     curPos = computePartialMoveSpot( nextPlayer );
+                    }
+
+                if( getFemale( nextPlayer ) && ! nextPlayer->declaredInfertile ) {
+                    char inCoreArea = isInsideCoreBoundaryPos( curPos );
+
+                    if( ( nextPlayer->bornInCoreArea && ! inCoreArea ) ||
+                        ( ! nextPlayer->bornInCoreArea && inCoreArea ) ) {
+
+                        nextPlayer->declaredInfertile = true;
+                        setInfertileDisplayName( nextPlayer );
+                        playerIndicesToSendNamesAbout.push_back( i );
+                        }
                     }
             
                 int curOverID = getMapObject( curPos.x, curPos.y );

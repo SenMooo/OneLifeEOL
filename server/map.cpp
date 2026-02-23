@@ -1355,6 +1355,24 @@ class File;
 static void spawnNpcStructures();
 static void spawnFrontierStructures();
 static void spawnMonumentStructures();
+
+static SimpleVector<char*> frontierSpawnPlacedNames;
+static SimpleVector<GridPos> frontierSpawnPlacedPositions;
+
+void getFrontierSpawnPlacements( SimpleVector<char*> *outSceneNames,
+                                 SimpleVector<GridPos> *outPositions ) {
+    if( outSceneNames != NULL ) {
+        for( int i=0; i<frontierSpawnPlacedNames.size(); i++ ) {
+            outSceneNames->push_back(
+                stringDuplicate( frontierSpawnPlacedNames.getElementDirect( i ) ) );
+            }
+        }
+
+    if( outPositions != NULL ) {
+        outPositions->push_back_other( &frontierSpawnPlacedPositions );
+        }
+    }
+
 static char loadStructureSceneFromFile( File *inFile,
                                         int inOffsetX, int inOffsetY );
  
@@ -10222,6 +10240,10 @@ static void spawnNpcStructures() {
 
 
 static void spawnFrontierStructures() {
+    frontierSpawnPlacedNames.deallocateStringElements();
+    frontierSpawnPlacedNames.deleteAll();
+    frontierSpawnPlacedPositions.deleteAll();
+
     const char *frontierFolderName = "structures/frontierSpawn";
 
     int centerSpacing = 1000;
@@ -10388,6 +10410,13 @@ static void spawnFrontierStructures() {
         saveNpcStructurePlacements( placementsPath,
                                     &placedNames,
                                     &placedPositions );
+        }
+
+    for( int i=0; i<placedNames.size() && i<placedPositions.size(); i++ ) {
+        frontierSpawnPlacedNames.push_back(
+            stringDuplicate( placedNames.getElementDirect( i ) ) );
+        frontierSpawnPlacedPositions.push_back(
+            placedPositions.getElementDirect( i ) );
         }
 
     delete [] placementsPath;

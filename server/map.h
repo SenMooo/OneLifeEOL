@@ -73,6 +73,11 @@ void getEvePosition( const char *inEmail, int inID, int *outX, int *outY,
 void mapEveDeath( const char *inEmail, double inAge, GridPos inDeathMapPos );
 
 
+// caller must delete strings in outSceneNames
+void getFrontierSpawnPlacements( SimpleVector<char*> *outSceneNames,
+                                 SimpleVector<GridPos> *outPositions );
+
+
 
 
 

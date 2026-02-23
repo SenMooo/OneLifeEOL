@@ -2810,7 +2810,12 @@ char *getNextServerMessage() {
                 else if( t == MAP_CHUNK ||
                          t == PONG ||
                          t == FLIGHT_DEST ||
-                         t == PHOTO_SIGNATURE ) {
+                        t == PHOTO_SIGNATURE ||
+                        t == REJECTED ||
+                        t == NO_LIFE_TOKENS ||
+                        t == SERVER_FULL ||
+                        t == SHUTDOWN ||
+                        t == FORCED_SHUTDOWN ) {
                     // map chunks are followed by compressed data
                     // they cannot be queued
                     
@@ -15362,7 +15367,14 @@ void LivingLifePage::step() {
         closeSocket( mServerSocket );
         mServerSocket = -1;
 
-        if( mFirstServerMessagesReceived  ) {
+                LiveObject *ourLiveObject = getOurLiveObject();
+
+                char fullyBorn =
+                        ( mFirstServerMessagesReceived == 3 &&
+                            mDoneLoadingFirstObjectSet &&
+                            ourLiveObject != NULL );
+
+        if( fullyBorn ) {
             
             if( mDeathReason != NULL ) {
                 delete [] mDeathReason;
@@ -15372,6 +15384,8 @@ void LivingLifePage::step() {
             handleOurDeath( true );
             }
         else {
+            // Safety fallback: if socket drops while still waiting to be born,
+            // always return to login/frontier selection instead of getting stuck.
             setWaiting( false );
             // Judge if the failed login is due to bad targetFamily base on loginSuccess
             // and whether we are trying to specify a targetFamily in the first place
